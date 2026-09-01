@@ -41,3 +41,7 @@ Issues surfaced during review but intentionally not fixed in the story that foun
 - source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/2-ffanalytics-projection-adapter.md`
   summary: `scripts/prepare.R` loads `config.R` via its own `sys.source` into a private env with a different required-key set than `.warroom_load_config()` in `R/projections.R`. Two divergent config loaders for the same file.
   evidence: Compounds the story-1 deferred item calling for a single public `load_config()`. Fold `prepare.R` onto it when story 3 introduces the accessor.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/3-snake-schedule-draft-state-and-rds-persistence.md`
+  summary: Nothing binds a draft to its projection snapshot at pick time. `record_pick()` and `derive_draft_view()` accept any `snapshot` argument without checking `snapshot$created_at == state$projection_created_at`, so picks can be recorded and views derived against the wrong snapshot with no error.
+  evidence: `rds-contracts.md` says the state is "bound to" one snapshot via `projection_created_at`, but the binding is currently write-only metadata. Story 4 (resume behavior) is the natural place to enforce it — on resume, load the snapshot and assert the timestamp matches before entering the loop.

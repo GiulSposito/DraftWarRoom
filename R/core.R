@@ -1,0 +1,329 @@
+## R/core.R -- the pure functional core of draft state (story 3).
+##
+## Responsibilities, all pure and offline (no network, no UI layer, no saving):
+##   * make_snake_schedule() -- the serpentine pick order for a snake draft (CAP-3)
+##   * new_draft()           -- build the initial state/draft.rds list (CAP-4)
+##   * record_pick() / undo_pick() -- validate and return a new state (CAP-6);
+##     they never save -- that is the story 4 adapter's job.
+##   * derive_draft_view()   -- current pick, team on the clock, rosters, available
+##     players, all derived from the ordered picks alone (CAP-5)
+##   * next_user_pick()      -- the user's next overall selection (CAP-5)
+##
+## Contracts: rds-contracts.md (state/draft.rds, picks), functional-core.md
+## (catalog + invariants). Persist facts, derive views: nothing here writes a
+## derived field back into the state.
+
+## Empty `picks` with the exact contract column types. The typed zero-row frame
+## keeps the incremental rbind in record_pick() from promoting column classes and
+## survives a saveRDS/readRDS round trip unchanged (rds-contracts.md:56-63).
+.warroom_empty_picks <- function() {
+  data.frame(
+    overall    = integer(0),
+    player_id  = character(0),
+    entered_at = as.POSIXct(character(0)),
+    stringsAsFactors = FALSE
+  )
+}
+
+## Require `x` to be a single, finite, whole number >= 1; return it as integer.
+## Rejects NA, non-numeric, non-scalar, non-integral (e.g. 12.9), and < 1 with a
+## message that names the offending argument.
+.warroom_whole_scalar <- function(x, what) {
+  if (length(x) != 1L || !is.numeric(x) || is.na(x) || !is.finite(x) ||
+      x %% 1 != 0 || x < 1) {
+    stop(what, " must be a single whole number >= 1; got ",
+         paste(deparse(x), collapse = ""))
+  }
+  as.integer(x)
+}
+
+#' Generate the complete snake (serpentine) pick order (CAP-3).
+#'
+#' Rounds alternate direction: odd rounds run slot 1 -> teams, even rounds run
+#' teams -> 1. For `teams` slots and `rounds` rounds the schedule has
+#' `teams * rounds` turns.
+#'
+#' @param teams integer, number of draft slots (12 for the initial league).
+#' @param rounds integer, number of rounds (14 for the initial league).
+#' @return a data frame with columns `overall` (1..teams*rounds), `round`,
+#'   `pick_in_round`, `slot`, all integer, ordered by `overall`.
+make_snake_schedule <- function(teams, rounds) {
+  teams  <- .warroom_whole_scalar(teams,  "make_snake_schedule(): teams")
+  rounds <- .warroom_whole_scalar(rounds, "make_snake_schedule(): rounds")
+
+  round         <- rep(seq_len(rounds), each = teams)
+  pick_in_round <- rep(seq_len(teams), times = rounds)
+  slot          <- ifelse(round %% 2L == 1L,
+                          pick_in_round,
+                          teams - pick_in_round + 1L)
+
+  data.frame(
+    overall       = seq_len(teams * rounds),
+    round         = as.integer(round),
+    pick_in_round = as.integer(pick_in_round),
+    slot          = as.integer(slot),
+    stringsAsFactors = FALSE
+  )
+}
+
+## Resolve and shape-check the league list: explicit `league` arg wins, else
+## config.R (loaded in an isolated environment, same pattern as projections.R).
+.warroom_resolve_league <- function(league) {
+  if (is.null(league)) {
+    cfg    <- .warroom_load_config()
+    league <- cfg$league
+    if (is.null(league)) {
+      stop("new_draft(): config.R has no `league` list and none was passed")
+    }
+  }
+  if (!is.list(league)) {
+    stop("new_draft(): league must be a list with teams, rounds, roster, ",
+         "flex_positions; got ", class(league)[1L])
+  }
+  required <- c("teams", "rounds", "roster", "flex_positions")
+  missing_keys <- setdiff(required, names(league))
+  if (length(missing_keys)) {
+    stop("new_draft(): league is missing key(s): ",
+         paste(missing_keys, collapse = ", "))
+  }
+
+  teams  <- .warroom_whole_scalar(league$teams,  "new_draft(): league$teams")
+  rounds <- .warroom_whole_scalar(league$rounds, "new_draft(): league$rounds")
+
+  roster <- league$roster
+  if (!is.numeric(roster) || is.null(names(roster))) {
+    stop("new_draft(): league$roster must be a named integer vector")
+  }
+  bad_roster <- is.na(roster) | roster %% 1 != 0
+  if (any(bad_roster)) {
+    stop("new_draft(): league$roster has non-integral / NA value(s): ",
+         paste(names(roster)[bad_roster], collapse = ", "))
+  }
+  storage.mode(roster) <- "integer"
+
+  list(
+    teams          = teams,
+    rounds         = rounds,
+    roster         = roster,
+    flex_positions = as.character(league$flex_positions)
+  )
+}
+
+#' Create the initial draft-state list (CAP-4).
+#'
+#' Persists facts only: the state carries the league, the slot order, the user's
+#' team, a seed, and an empty ordered `picks` frame. Everything else (current
+#' pick, rosters, availability) is derived later by `derive_draft_view()`.
+#'
+#' @param snapshot a projection snapshot (rds-contracts.md); only `created_at`
+#'   and `players$player_id` are read.
+#' @param team_order character vector of team names in draft-slot order; length
+#'   must equal `league$teams` and names must be unique.
+#' @param user_team one entry of `team_order`.
+#' @param seed integer, for reproducible simulation / tie-breaks (story 7).
+#' @param league optional league list; defaults to config.R's `league`.
+#' @return the state list matching `state/draft.rds` in rds-contracts.md.
+new_draft <- function(snapshot, team_order, user_team, seed = 1L, league = NULL) {
+  if (!is.list(snapshot) || !inherits(snapshot$created_at, "POSIXct")) {
+    stop("new_draft(): snapshot must be a list with a POSIXct `created_at`")
+  }
+  if (!is.data.frame(snapshot$players) ||
+      is.null(snapshot$players[["player_id"]])) {
+    stop("new_draft(): snapshot$players must be a data frame with a ",
+         "player_id column")
+  }
+
+  league     <- .warroom_resolve_league(league)
+  team_order <- as.character(team_order)
+
+  if (length(team_order) != league$teams) {
+    stop("new_draft(): team_order has ", length(team_order),
+         " entries but league$teams is ", league$teams)
+  }
+  if (anyNA(team_order)) {
+    stop("new_draft(): team_order contains NA entr(ies) in slot(s): ",
+         paste(which(is.na(team_order)), collapse = ", "))
+  }
+  if (anyDuplicated(team_order)) {
+    stop("new_draft(): team_order has duplicate name(s): ",
+         paste(unique(team_order[duplicated(team_order)]), collapse = ", "))
+  }
+  if (length(user_team) != 1L || is.na(user_team) ||
+      !user_team %in% team_order) {
+    stop("new_draft(): user_team '",
+         paste(deparse(user_team), collapse = ""),
+         "' is not one of team_order")
+  }
+  if (length(seed) != 1L || !is.numeric(seed) || is.na(seed) ||
+      seed %% 1 != 0) {
+    stop("new_draft(): seed must be a single whole number")
+  }
+
+  list(
+    schema_version        = 1L,
+    projection_created_at  = snapshot$created_at,
+    league                 = league,
+    team_order             = team_order,
+    user_team              = as.character(user_team),
+    seed                   = as.integer(seed),
+    picks                  = .warroom_empty_picks()
+  )
+}
+
+#' Validate and append a player to `picks`, returning a new state (CAP-6).
+#'
+#' Does not save -- persistence is the story 4 adapter's job. Rejects an unknown
+#' `player_id`, one already drafted, or a pick beyond `teams * rounds`.
+#'
+#' @param state a draft-state list.
+#' @param player_id character, must exist in `snapshot$players$player_id`.
+#' @param snapshot the projection snapshot bound to this draft.
+#' @param entered_at POSIXct (or coercible); the persisted pick timestamp.
+#' @return the state with one more row in `picks`.
+record_pick <- function(state, player_id, snapshot, entered_at = Sys.time()) {
+  player_id <- as.character(player_id)
+  if (length(player_id) != 1L || is.na(player_id)) {
+    stop("record_pick(): player_id must be a single non-NA string")
+  }
+  if (!is.data.frame(snapshot$players) ||
+      is.null(snapshot$players[["player_id"]])) {
+    stop("record_pick(): snapshot$players must be a data frame with a ",
+         "player_id column")
+  }
+  if (length(entered_at) != 1L) {
+    stop("record_pick(): entered_at must be length 1; got length ",
+         length(entered_at))
+  }
+  entered_at <- tryCatch(
+    as.POSIXct(entered_at),
+    error = function(e) {
+      stop("record_pick(): entered_at is not a valid timestamp (",
+           conditionMessage(e), ")")
+    }
+  )
+  if (is.na(entered_at)) {
+    stop("record_pick(): entered_at coerced to NA -- pass a POSIXct or a ",
+         "parseable date-time string")
+  }
+
+  if (!player_id %in% snapshot$players$player_id) {
+    stop("record_pick(): player_id '", player_id,
+         "' is not in the projection snapshot")
+  }
+  if (player_id %in% state$picks$player_id) {
+    stop("record_pick(): player_id '", player_id,
+         "' has already been drafted")
+  }
+  max_picks <- state$league$teams * state$league$rounds
+  if (nrow(state$picks) >= max_picks) {
+    stop("record_pick(): draft is full -- ", max_picks,
+         " picks (teams * rounds) already recorded")
+  }
+
+  new_row <- data.frame(
+    overall    = as.integer(nrow(state$picks) + 1L),
+    player_id  = player_id,
+    entered_at = entered_at,
+    stringsAsFactors = FALSE
+  )
+  state$picks <- rbind(state$picks, new_row)
+  rownames(state$picks) <- NULL
+  state
+}
+
+#' Remove the most recent pick, returning a new state (CAP-6).
+#'
+#' @param state a draft-state list with at least one pick.
+#' @return the state with the last `picks` row removed.
+undo_pick <- function(state) {
+  n <- nrow(state$picks)
+  if (n == 0L) {
+    stop("undo_pick(): there are no picks to undo")
+  }
+  state$picks <- state$picks[seq_len(n - 1L), , drop = FALSE]
+  rownames(state$picks) <- NULL
+  state
+}
+
+#' Derive every view over a draft from the ordered picks alone (CAP-5).
+#'
+#' Nothing here is written back into `state`. The snapshot is required because
+#' `available` and `rosters` are projections over `snapshot$players`; the state
+#' by itself only holds `player_id`.
+#'
+#' @param state a draft-state list.
+#' @param snapshot the projection snapshot bound to this draft.
+#' @return a list: `current_overall` (`nrow(picks)+1`, or `NA` when complete),
+#'   `is_complete`, `round_on_clock`, `slot_on_clock`, `team_on_clock` (`NA` when
+#'   complete), `drafted_ids`, `available` (snapshot players minus drafted),
+#'   `rosters` (named by `team_order`, each the drafted players' snapshot rows).
+derive_draft_view <- function(state, snapshot) {
+  if (!is.data.frame(snapshot$players)) {
+    stop("derive_draft_view(): snapshot$players must be a data frame; got ",
+         class(snapshot$players)[1L])
+  }
+  schedule <- make_snake_schedule(state$league$teams, state$league$rounds)
+  total    <- state$league$teams * state$league$rounds
+  k        <- nrow(state$picks)
+  is_complete     <- k >= total
+  current_overall <- if (is_complete) NA_integer_ else as.integer(k + 1L)
+
+  players     <- snapshot$players
+  drafted_ids <- state$picks$player_id
+  available   <- players[!(players$player_id %in% drafted_ids), , drop = FALSE]
+  rownames(available) <- NULL
+
+  ## pick i belongs to team_order[schedule$slot[i]] (schedule$overall == row).
+  pick_slot <- if (k > 0L) schedule$slot[state$picks$overall] else integer(0)
+  rosters <- stats::setNames(
+    lapply(seq_along(state$team_order), function(slot_i) {
+      ids <- state$picks$player_id[pick_slot == slot_i]
+      roster_df <- players[match(ids, players$player_id), , drop = FALSE]
+      rownames(roster_df) <- NULL
+      roster_df
+    }),
+    state$team_order
+  )
+
+  if (is_complete) {
+    round_on_clock <- NA_integer_
+    slot_on_clock  <- NA_integer_
+    team_on_clock  <- NA_character_
+  } else {
+    row <- schedule[schedule$overall == current_overall, ]
+    round_on_clock <- row$round
+    slot_on_clock  <- row$slot
+    team_on_clock  <- state$team_order[row$slot]
+  }
+
+  list(
+    current_overall = current_overall,
+    is_complete     = is_complete,
+    round_on_clock  = round_on_clock,
+    slot_on_clock   = slot_on_clock,
+    team_on_clock   = team_on_clock,
+    drafted_ids     = drafted_ids,
+    available       = available,
+    rosters         = rosters
+  )
+}
+
+#' The user's next overall selection (CAP-5).
+#'
+#' The smallest schedule `overall` whose slot is the user's and which is at or
+#' after the current pick; `NA_integer_` once the user has no picks left.
+#'
+#' @param state a draft-state list.
+#' @return integer scalar, or `NA_integer_`.
+next_user_pick <- function(state) {
+  schedule  <- make_snake_schedule(state$league$teams, state$league$rounds)
+  user_slot <- match(state$user_team, state$team_order)
+  if (is.na(user_slot)) {
+    stop("next_user_pick(): user_team '", state$user_team,
+         "' is not in team_order")
+  }
+  current_overall <- nrow(state$picks) + 1L
+  candidates <- schedule$overall[schedule$slot == user_slot &
+                                   schedule$overall >= current_overall]
+  if (!length(candidates)) NA_integer_ else as.integer(min(candidates))
+}

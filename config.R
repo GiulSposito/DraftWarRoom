@@ -28,6 +28,11 @@ vor_baseline <- c(QB = 13, RB = 35, WR = 36, TE = 13, K = 13, DST = 13)
 user_team <- "Team 01"
 user_slot <- 1L
 
+## Seed carried into every new draft state by new_draft() (story 3) and reused by
+## the story 7 mock simulator for reproducible runs and deterministic tie-breaks.
+## Pure value, no logic.
+seed <- 1L
+
 ## Filesystem layout. data/*.rds and state/*.rds are gitignored and rebuilt.
 paths <- list(
   data        = "data",
