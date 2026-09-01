@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# renv
+renv/library/
+renv/local/
+renv/staging/
+
+# Runtime draft state (derived, per-machine)
+state/*.rds
+state/*.bak
+
+# Generated projection artifacts (rebuild via scripts/prepare.R)
+data/*.rds
