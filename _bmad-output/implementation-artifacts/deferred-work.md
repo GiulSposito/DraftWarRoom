@@ -25,3 +25,19 @@ Issues surfaced during review but intentionally not fixed in the story that foun
 - source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/1-walking-skeleton-and-synthetic-snapshot.md`
   summary: `nfl_team` codes in the fixture (`LV`, `LAC`, `LAR`, `WAS`, `JAX`) are unconstrained and `validate_projections()` places no constraint on the column; `ffanalytics` / nflverse often emit `LA`, `WSH`, `JAC`.
   evidence: If any later story joins on or displays `nfl_team`, define a canonical team-code list and validate against it, and align the fixture with whatever `scripts/prepare.R` produces in story 2.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/2-ffanalytics-projection-adapter.md`
+  summary: `make test`'s offline guarantee now depends on `renv` being pre-installed. The new `.Rprofile` sources `renv/activate.R` on every `Rscript` call, and from a clean checkout / CI cache-miss that autoloader bootstraps `renv` over the network before `tests/smoke.R` runs.
+  evidence: Verified `make test` runs offline on this machine only because `renv` 1.2.3 is already installed. A fully hermetic test path (or a documented "renv must be preinstalled" precondition plus a CI renv cache) is follow-up work.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/2-ffanalytics-projection-adapter.md`
+  summary: No check pins the real `ffanalytics` projection-table contract (exact column names, `pos` label domain). `make test` exercises `normalize_projections()` only against a hand-built `mk_proj_table()` that encodes the author's assumptions, so an API drift within the pinned `ffanalytics` version is invisible until `make prepare` is run with network.
+  evidence: The pinned commit and a successful live `make prepare` this session cover the current risk, but a regression would only surface right before the draft. A separate, non-`make test` check that runs one `scrape_data()` (or reads a committed `raw_scrape` fixture) and asserts `names(projections_table(...))` and `all(unique(pos) %in% valid_pos)` would close the gap.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/2-ffanalytics-projection-adapter.md`
+  summary: `scripts/prepare.R` silently overwrites `data/projections.rds` on every run. The snapshot must be immutable for the duration of a draft, but there is no guard against a mid-draft re-prepare replacing it.
+  evidence: Compounds the existing story-1 deferred item about `make test` displacing a real snapshot. Add an explicit guard (refuse unless the file is absent or `--force` is passed).
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/2-ffanalytics-projection-adapter.md`
+  summary: `scripts/prepare.R` loads `config.R` via its own `sys.source` into a private env with a different required-key set than `.warroom_load_config()` in `R/projections.R`. Two divergent config loaders for the same file.
+  evidence: Compounds the story-1 deferred item calling for a single public `load_config()`. Fold `prepare.R` onto it when story 3 introduces the accessor.
