@@ -18,3 +18,4 @@ state/*.bak
 
 # Generated projection artifacts (rebuild via scripts/prepare.R)
 data/*.rds
+data/*.bak

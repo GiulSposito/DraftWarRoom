@@ -1,0 +1,96 @@
+- id: "1"
+  title: Walking skeleton and synthetic snapshot
+  description: >-
+    Create the minimal R repository, config.R, Makefile, core loader, a synthetic
+    data/projections.rds satisfying the rds-contracts.md schema, and tests/smoke.R.
+    Establishes CAP-2 and the projections.rds runtime contract; no ffanalytics.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Synthetic projections.rds only — do not integrate ffanalytics or any scraping.
+    Fix the projections.rds runtime contract per companion rds-contracts.md. No
+    terminal loop, no recommendation logic, no Shiny.
+- id: "2"
+  title: ffanalytics projection adapter
+  description: >-
+    Implement scripts/prepare.R per preparation-pipeline.md: custom Full-PPR
+    scoring by copy-and-override, scrape_data, projections_table, normalization,
+    field validation, data/raw_scrape.rds, and data/projections.rds. Fulfils CAP-1.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    ffanalytics may be used only in scripts/prepare.R. Do not make the runtime
+    depend on live scraping. Preserve the projections.rds contract from story 1;
+    save data/raw_scrape.rds and reject duplicate player_id.
+- id: "3"
+  title: Snake schedule, draft state, and RDS persistence
+  description: >-
+    Implement make_snake_schedule, new_draft, derive_draft_view, next_user_pick,
+    record_pick, undo_pick, load_state, and atomic save_state with .bak backup.
+    Covers CAP-3, CAP-4, CAP-5, CAP-6 and the rds-contracts.md invariants.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Persist only ordered picks (overall, player_id, entered_at); derive current
+    pick, rosters and availability. Atomic save: temp file, .bak of previous
+    state, rename into place. Do not implement the terminal loop yet.
+- id: "4"
+  title: Operational terminal draft
+  description: >-
+    Implement scripts/draft.R: the interactive loop, player-name resolution
+    (exact/substring/prefix/fuzzy + numbered disambiguation), the required command
+    set, resume behavior, and a full reduced rehearsal. Fulfils CAP-7.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Use the functional core from prior stories; no business rules inside
+    scripts/draft.R. Implement /rec /board /board <pos> /team /teams /undo /status
+    /save /quit, resume, and run a full reduced rehearsal with a stop/resume.
+- id: "5"
+  title: Roster-aware recommendation foundation
+  description: >-
+    Implement lineup_value, marginal roster value, bench option value, VOR/tier
+    candidate ranking, feasibility guardrails, deterministic labels and rule-based
+    explanations per recommendation-algorithm.md (components 1 and 4). Fulfils CAP-8.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Deterministic ranking only. Do not implement p_next or wait-cost logic (that
+    is story 6). Explanations come from rules, never an LLM. Enforce the K/DST,
+    QB2, TE2 and roster-feasibility guardrails.
+- id: "6"
+  title: Market-aware wait intelligence
+  description: >-
+    Implement p_next (conditional ADP survival), expected best survivor, wait
+    cost, tier cliff, adp_value, and the configurable weighted final score, plus
+    focused algorithm tests per recommendation-algorithm.md. Fulfils CAP-9.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    The wait-cost calculation is analytic and deterministic — no live Monte
+    Carlo. p_next stays bounded to [0,1]. Same snapshot + config + picks must
+    reproduce the same order. Run make test and make simulate.
+- id: "7"
+  title: Mock simulator and calibration
+  description: >-
+    Implement opponent_pick, seeded simulate_draft, the adp/vor/warroom strategy
+    comparison, the metric set and weight-grid calibration in operations.md, and
+    invalid-roster checks. Fulfils CAP-10.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Seeded and reproducible. Small transparent weight grid — no genetic
+    algorithm. Every simulated draft must end with valid 14-player rosters. Run
+    make test and make simulate.
+- id: "8"
+  title: Thin Shiny War Room
+  description: >-
+    Implement app.R as a single-page UI over the shared core and RDS files: state
+    recovery, pick entry, undo, recommendations, roster, draft log, and a
+    terminal-vs-Shiny equivalence rehearsal. Fulfils CAP-11.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    app.R calls exactly the same core recommendation and persistence functions as
+    the terminal; no formulas duplicated in Shiny reactives. Verify terminal and
+    Shiny produce the same recommendation order from the same RDS state.
