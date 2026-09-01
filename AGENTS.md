@@ -1,5 +1,5 @@
 <!-- bmad:context -->
-<!-- Verificado em 2026-09-01, greenfield sem commit inicial. Gerenciado por bmad-project-context; edições dentro deste bloco são substituídas no refresh. Mantenha fora dos marcadores o que quiser preservar. -->
+<!-- Verificado em 2026-09-01 contra 42935f6 (greenfield, sem código ainda). Gerenciado por bmad-project-context; edições dentro deste bloco são substituídas no refresh. Mantenha fora dos marcadores o que quiser preservar. -->
 
 ## DraftWarRoom
 
