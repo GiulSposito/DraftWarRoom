@@ -327,3 +327,153 @@ next_user_pick <- function(state) {
                                    schedule$overall >= current_overall]
   if (!length(candidates)) NA_integer_ else as.integer(min(candidates))
 }
+
+## --- Player-name resolution and board (story 4) ------------------------------
+## Pure, offline helpers the terminal adapter (scripts/draft.R) and the story 8
+## Shiny UI both call so no matching or board-ordering logic is duplicated in an
+## adapter (functional-core.md, SPEC "Constraints").
+
+.warroom_pos_levels <- c("QB", "RB", "WR", "TE", "K", "DST")
+
+## Normalize a player name for matching: lowercase, transliterate accents to
+## ASCII, collapse every run of non-alphanumeric characters to a single space,
+## trim. Vectorized. `iconv(., "ASCII//TRANSLIT")` returns NA per element it
+## cannot transliterate (and, on a few locales, for every element) -- fall back
+## to the lowercased pre-iconv string there rather than losing the name entirely.
+.warroom_normalize_name <- function(x) {
+  lo   <- tolower(as.character(x))
+  ascii <- iconv(lo, to = "ASCII//TRANSLIT")
+  ascii[is.na(ascii)] <- lo[is.na(ascii)]
+  ascii[is.na(ascii)] <- ""
+  ascii <- gsub("[^a-z0-9]+", " ", ascii)
+  trimws(gsub("[[:space:]]+", " ", ascii))
+}
+
+#' Resolve a typed query to available players (CAP-7).
+#'
+#' Matching is tried in order and the first non-empty tier wins: exact normalized
+#' name, prefix, substring, then an `adist()` fuzzy fallback (all names at the
+#' minimum edit distance, when that distance is within
+#' `max(1, floor(nchar(query) / 3))`). Only rows of `available` can be returned.
+#' If exact, prefix and substring all come up empty and the query is nonetheless
+#' the exact normalized name of some player in `all_players` who is not available,
+#' the result is `"none"` (they are drafted) instead of fuzzy near-neighbours.
+#' Players whose normalized name is empty never match. The returned rows are
+#' ordered by `points` descending, `player_id` ascending, for a stable numbered
+#' disambiguation list.
+#'
+#' @param query character scalar, the raw user input.
+#' @param available a data frame of available players (`derive_draft_view()$available`);
+#'   must carry `player_id`, `player`, `points`.
+#' @param all_players the full snapshot player table (`snapshot$players`); used
+#'   only to recognise an exact name that is already drafted. Defaults to
+#'   `available` (no drafted-name detection).
+#' @return a list: `status` (`"unique"`, `"ambiguous"`, or `"none"`), `players`
+#'   (the matched rows of `available`, possibly zero), `query` (the raw input).
+resolve_player <- function(query, available, all_players = available) {
+  if (length(query) != 1L || is.na(query)) {
+    stop("resolve_player(): query must be a single non-NA string")
+  }
+  if (!is.data.frame(available) ||
+      !all(c("player_id", "player", "points") %in% names(available))) {
+    stop("resolve_player(): available must be a data frame with player_id, ",
+         "player, points")
+  }
+
+  none <- list(status = "none",
+               players = available[0L, , drop = FALSE],
+               query = query)
+
+  q <- .warroom_normalize_name(query)
+  if (!nzchar(q) || nrow(available) == 0L) {
+    return(none)
+  }
+
+  names_norm <- .warroom_normalize_name(available$player)
+  ok <- which(nzchar(names_norm))          # never match a blank normalized name
+
+  idx <- ok[names_norm[ok] == q]
+  if (!length(idx)) idx <- ok[startsWith(names_norm[ok], q)]
+  if (!length(idx)) idx <- ok[grepl(q, names_norm[ok], fixed = TRUE)]
+  if (!length(idx)) {
+    ## Exact/prefix/substring all empty. If the query is the exact name of a
+    ## player who exists in the snapshot but is not available, they are drafted
+    ## -- return "none" rather than fuzzy-guessing look-alikes.
+    if (is.data.frame(all_players) && "player" %in% names(all_players) &&
+        any(.warroom_normalize_name(all_players$player) == q)) {
+      return(none)
+    }
+    d <- as.integer(utils::adist(q, names_norm[ok]))
+    threshold <- max(1L, as.integer(floor(nchar(q) / 3)))
+    if (length(d) && min(d) <= threshold) {
+      idx <- ok[d == min(d)]
+    }
+  }
+  if (!length(idx)) {
+    return(none)
+  }
+
+  rows  <- available[idx, , drop = FALSE]
+  rows  <- rows[order(-rows$points, rows$player_id, method = "radix"), ,
+                drop = FALSE]
+  rownames(rows) <- NULL
+
+  list(
+    status  = if (nrow(rows) == 1L) "unique" else "ambiguous",
+    players = rows,
+    query   = query
+  )
+}
+
+#' The best available players, optionally filtered by position (CAP-7).
+#'
+#' Ordering is by `overall_rank` when present, else by `points` descending. Pure
+#' presentation projection over `derive_draft_view()$available` — the same one the
+#' Shiny available-player table uses.
+#'
+#' @param view a `derive_draft_view()` result.
+#' @param pos optional position filter, one of QB/RB/WR/TE/K/DST (any case).
+#' @param n optional row cap.
+#' @return the matching rows of `view$available`, ordered, row names reset.
+available_board <- function(view, pos = NULL, n = NULL) {
+  av <- view$available
+  if (!is.data.frame(av)) {
+    stop("available_board(): view$available must be a data frame; got ",
+         class(av)[1L])
+  }
+  if (is.null(av[["player_id"]]) ||
+      !any(c("overall_rank", "points") %in% names(av))) {
+    stop("available_board(): view$available needs player_id and one of ",
+         "overall_rank / points")
+  }
+
+  if (!is.null(pos)) {
+    if (length(pos) != 1L || is.na(pos)) {
+      stop("available_board(): pos must be a single non-NA string")
+    }
+    if (is.null(av[["pos"]])) {
+      stop("available_board(): view$available has no pos column to filter on")
+    }
+    pos <- toupper(as.character(pos))
+    if (!pos %in% .warroom_pos_levels) {
+      stop("available_board(): unknown position '", pos, "' -- expected one of ",
+           paste(.warroom_pos_levels, collapse = ", "))
+    }
+    av <- av[!is.na(av$pos) & av$pos == pos, , drop = FALSE]
+  }
+
+  ## Deterministic order, player_id as the tie-break (rds-contracts.md inv. 9).
+  ord <- if ("overall_rank" %in% names(av)) {
+    order(av$overall_rank, av$player_id, method = "radix")
+  } else {
+    order(-av$points, av$player_id, method = "radix")
+  }
+  av <- av[ord, , drop = FALSE]
+
+  if (!is.null(n)) {
+    n <- .warroom_whole_scalar(n, "available_board(): n")
+    av <- utils::head(av, n)
+  }
+  rownames(av) <- NULL
+  av
+}

@@ -45,3 +45,19 @@ Issues surfaced during review but intentionally not fixed in the story that foun
 - source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/3-snake-schedule-draft-state-and-rds-persistence.md`
   summary: Nothing binds a draft to its projection snapshot at pick time. `record_pick()` and `derive_draft_view()` accept any `snapshot` argument without checking `snapshot$created_at == state$projection_created_at`, so picks can be recorded and views derived against the wrong snapshot with no error.
   evidence: `rds-contracts.md` says the state is "bound to" one snapshot via `projection_created_at`, but the binding is currently write-only metadata. Story 4 (resume behavior) is the natural place to enforce it — on resume, load the snapshot and assert the timestamp matches before entering the loop.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/4-operational-terminal-draft.md`
+  summary: Story 4's resume path does not enforce the draft-to-snapshot binding. `run_draft()` calls `load_state()` then `load_projections()` and enters the loop without asserting `snapshot$created_at == state$projection_created_at`, so resuming a draft against a rebuilt snapshot is silently allowed.
+  evidence: Carries forward the story-3 deferred item that nominated story 4 as the enforcement point; the approved story-4 spec did not include it, so it was intentionally left for a focused follow-up. The check is one comparison at the top of `run_draft()` after both files are loaded.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/4-operational-terminal-draft.md`
+  summary: New-draft team-order entry commits immediately with no echo or confirmation step. A mistyped team name cannot be corrected from inside the loop (`/undo` only touches picks) — the user must delete `state/draft.rds` by hand.
+  evidence: Adversarial review finding. The frozen spec says "chamar new_draft e save_state na hora", so a confirm step is a deliberate scope decision to revisit; Shiny (story 8) enters the draft order through a different flow anyway.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/4-operational-terminal-draft.md`
+  summary: The live `recommend_players` rendering branch in `scripts/draft.R` is untested and guesses at story-5 output columns. Column names were aligned to `recommendation-algorithm.md`, but the row formatting (`paste(format(recs[i, show]), collapse = "  ")`) is crude and unverified.
+  evidence: Story 5 owns the `recommend_players` contract and should replace this stand-in renderer with a proper one plus a terminal-output test, per its own spec.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/4-operational-terminal-draft.md`
+  summary: `.warroom_print_board` hardcodes a 15-row cap with no way for the user to ask for more, even though `available_board()` already accepts an `n` argument. `/board <n>` or `/board <pos> <n>` would be a natural extension.
+  evidence: Adversarial review finding; minor usability gap, out of scope for the required command set.

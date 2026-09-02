@@ -710,6 +710,184 @@ if (nrow(rv$available) != nrow(snap$players) - 10L)   fail("round trip: availabl
 
 cat("story 3 offline checks OK -- schedule + draft state + RDS persistence\n")
 
+## --- story 4: operational terminal draft (offline) ----------------------
+## Drive scripts/draft.R's run_draft() with canned input/output connections.
+## Covers every row of the story-4 I/O & Edge-Case matrix, plus a full reduced
+## rehearsal with one stop (/quit) and resume. tempdir() only, no network.
+
+source("scripts/draft.R")   # defines run_draft(); sys.nframe() guard prevents exec
+
+s4_dir  <- file.path(tempdir(), "warroom-s4")
+unlink(s4_dir, recursive = TRUE)
+s4_path <- file.path(s4_dir, "draft.rds")
+team_line <- paste(sprintf("Team %02d", 1:12), collapse = ",")
+
+## Run run_draft() over a canned script; return the captured output lines.
+s4_run <- function(lines, state_path = s4_path) {
+  ci <- textConnection(lines)
+  co <- textConnection("s4_out", open = "w", local = TRUE)
+  run_draft(con = ci, out = co, snapshot = snap, state_path = state_path)
+  close(co); close(ci)
+  s4_out
+}
+has <- function(out, pat) any(grepl(pat, out, fixed = TRUE))
+
+## (1a) New draft; /undo with no picks; invalid team orders are caught earlier.
+o1a <- s4_run(c(team_line, "/undo", "/status", "/quit"))
+if (!has(o1a, "== novo draft =="))   fail("s4: new-draft banner missing")
+if (!has(o1a, "nada a desfazer"))    fail("s4: /undo on empty draft not handled")
+if (!file.exists(s4_path))           fail("s4: new draft not saved")
+d_new <- load_state(s4_path)
+if (nrow(d_new$picks) != 0L)         fail("s4: new draft should have 0 picks")
+if (!identical(d_new$user_team, "Team 01")) fail("s4: user_team not derived from user_slot")
+if (length(setdiff(names(d_new), .warroom_state_keys)) != 0L) {
+  fail("s4: saved state carries non-contract keys")
+}
+
+## Invalid team order -> caught, re-prompt, then a valid line proceeds.
+o_bad <- s4_run(c("A,B,C", paste(sprintf("T%02d", 1:12), collapse = ","), "/quit"),
+                state_path = file.path(tempdir(), "warroom-s4-bad", "draft.rds"))
+if (!has(o_bad, "ordem invalida")) fail("s4: short team order not rejected")
+
+## (1b) Resume the 0-pick draft and exercise resolution + every command.
+o1b <- s4_run(c(
+  "RB Synthetic 01",     # pick 1 Team 01 (user) -- exact
+  "te synthe",           # pick 2 Team 02 -- prefix tier, ambiguous
+  "2",                   #   choose the 2nd TE
+  "r synthetic 40",      # pick 3 Team 03 -- substring tier (prefix empty), unique
+  "rb synthetc 03",      # pick 4 Team 04 -- fuzzy (typo), unique
+  "qb synthetic 1",      # pick 5 Team 05 -- ambiguous (QB 10-19)
+  "1",                   #   choose the 1st
+  "xyzzy",               # pick 6 -- no match
+  "RB Synthetic 01",     # pick 6 -- already drafted -> resolves to none
+  "/board", "/board rb", "/board xx",   # board, filtered, invalid pos
+  "/team", "/teams", "/status", "/rec", # views + degraded rec
+  "WR Synthetic 01",     # pick 6 Team 06 -- exact
+  "/undo",               # undo pick 6
+  "WR Synthetic 02",     # pick 6 Team 06 again
+  "/save",               # explicit save
+  "K Synthetic 01",      # pick 7 Team 07
+  "DST Synthetic 04",    # pick 8 Team 08
+  "/quit"                # stop mid-draft
+))
+if (!has(o1b, "== retomando"))                       fail("s4: resume banner missing")
+if (!has(o1b, "varios jogadores casam 'te synthe'")) fail("s4: prefix-tier disambiguation missing")
+if (!has(o1b, "varios jogadores casam 'qb synthetic 1'")) fail("s4: ambiguous+number missing")
+if (!has(o1b, "nenhum jogador disponivel casa 'xyzzy'")) fail("s4: no-match not reported")
+if (!has(o1b, "nenhum jogador disponivel casa 'RB Synthetic 01'")) fail("s4: already-drafted name not rejected")
+if (!has(o1b, "melhores disponiveis:"))              fail("s4: /board missing")
+if (!has(o1b, "melhores disponiveis (RB)"))          fail("s4: /board rb missing")
+if (!has(o1b, "unknown position 'XX'"))              fail("s4: /board xx not validated")
+if (!has(o1b, "R01  overall"))                       fail("s4: /status banner missing")
+if (!has(o1b, "recomendacoes chegam na story 5"))    fail("s4: degraded /rec missing")
+if (!has(o1b, "desfeito o ultimo pick"))             fail("s4: /undo not confirmed")
+if (!has(o1b, "salvo em"))                           fail("s4: /save not confirmed")
+if (!has(o1b, "Team 01:"))                           fail("s4: /team header missing")
+if (!has(o1b, "Team 12:"))                           fail("s4: /teams did not list every team")
+
+d1b <- load_state(s4_path)
+if (nrow(d1b$picks) != 8L)                        fail("s4: expected 8 picks after 1b, got ", nrow(d1b$picks))
+if (d1b$picks$player_id[1] != "SYN-RB-001")       fail("s4: pick 1 not RB Synthetic 01")
+if ("SYN-WR-001" %in% d1b$picks$player_id)        fail("s4: undone WR Synthetic 01 still recorded")
+if (!("SYN-WR-002" %in% d1b$picks$player_id))     fail("s4: WR Synthetic 02 not recorded")
+if (!("SYN-WR-040" %in% d1b$picks$player_id))     fail("s4: substring match WR Synthetic 40 not recorded")
+if (!("SYN-RB-003" %in% d1b$picks$player_id))     fail("s4: fuzzy match RB Synthetic 03 not recorded")
+if (!file.exists(paste0(s4_path, ".bak")))        fail("s4: no .bak after repeated saves")
+if (!identical(d1b$picks$overall, 1:8))           fail("s4: picks$overall not 1..8")
+
+## (1c) Command-loop edge cases on a fresh draft: /help, blank line, out-of-range
+## disambiguation number, and EOF mid-loop (no trailing /quit) -> clean save.
+s4c_path <- file.path(tempdir(), "warroom-s4c", "draft.rds")
+unlink(dirname(s4c_path), recursive = TRUE)
+o1c <- s4_run(c(
+  team_line,
+  "/help",               # help text
+  "",                    # blank line -> reprompt, no crash
+  "te synthe", "99",     # ambiguous + out-of-range number -> no pick
+  "te synthe", "999999", # again, huge number
+  "QB Synthetic 04"      # a real pick, then input ends WITHOUT /quit -> EOF quit
+), state_path = s4c_path)
+if (!has(o1c, "comandos: /rec"))          fail("s4: /help not shown")
+if (!has(o1c, "numero fora do range"))    fail("s4: out-of-range disambiguation not handled")
+d1c <- load_state(s4c_path)               # EOF must have saved
+if (nrow(d1c$picks) != 1L)                fail("s4: EOF mid-loop did not save exactly the 1 real pick")
+if (d1c$picks$player_id[1] != "SYN-QB-004") fail("s4: EOF-run recorded the wrong pick")
+unlink(dirname(s4c_path), recursive = TRUE)
+
+## (1d) Auto-recommendation on the user's turn must appear BEFORE the first pick
+## prompt, independently of any /rec command.
+s4d_path <- file.path(tempdir(), "warroom-s4d", "draft.rds")
+unlink(dirname(s4d_path), recursive = TRUE)
+invisible(s4_run(team_line_only <- c(team_line, "/quit"), state_path = s4d_path))
+o1d <- s4_run(c("QB Synthetic 03"), state_path = s4d_path)  # resume; user (Team 01) on the clock, no /rec
+rec_at    <- which(grepl("recomendacoes chegam na story 5", o1d, fixed = TRUE))
+prompt_at <- which(grepl("pick 1 > ", o1d, fixed = TRUE))
+if (!length(rec_at))                       fail("s4: no auto-recommendation on the user's turn")
+if (length(prompt_at) && rec_at[1] > prompt_at[1]) fail("s4: recommendation printed after the pick prompt")
+unlink(dirname(s4d_path), recursive = TRUE)
+
+## (1e) Invalid team orders at the adapter: 13 names and a duplicate name.
+o_bad2 <- s4_run(c(paste(sprintf("Team %02d", 1:13), collapse = ","),
+                   sub("Team 02", "Team 01",
+                       paste(sprintf("Team %02d", 1:12), collapse = ",")),
+                   paste(sprintf("Team %02d", 1:12), collapse = ","), "/quit"),
+                 state_path = file.path(tempdir(), "warroom-s4-bad2", "draft.rds"))
+if (sum(grepl("ordem invalida", o_bad2)) < 2L) fail("s4: 13-name / duplicate order not both rejected")
+unlink(file.path(tempdir(), "warroom-s4-bad2"), recursive = TRUE)
+
+## (2) Resume and complete the rehearsal to all 168 picks.
+o2 <- s4_run(snap$players$player)   # every full name; drafted ones resolve to none
+if (!has(o2, "=== DRAFT COMPLETO -- 168 picks ==="))  fail("s4: rehearsal did not complete 168 picks")
+d_final <- load_state(s4_path)
+if (nrow(d_final$picks) != 168L)                      fail("s4: final draft not 168 picks")
+if (anyDuplicated(d_final$picks$player_id))           fail("s4: duplicate pick in completed draft")
+vf <- derive_draft_view(d_final, snap)
+if (!isTRUE(vf$is_complete))                          fail("s4: final view not is_complete")
+if (!is.na(vf$current_overall))                       fail("s4: completed draft still has a current pick")
+if (length(setdiff(names(readRDS(s4_path)), .warroom_state_keys)) != 0L) {
+  fail("s4: completed-draft state carries non-contract keys")
+}
+
+## resolve_player / available_board direct unit checks.
+vroot <- derive_draft_view(new_draft(snap, sprintf("Team %02d", 1:12), "Team 01"), snap)
+r_ex <- resolve_player("WR Synthetic 05", vroot$available)
+if (r_ex$status != "unique" || nrow(r_ex$players) != 1L) fail("s4: exact resolve not unique")
+r_no <- resolve_player("no such guy", vroot$available)
+if (r_no$status != "none")                               fail("s4: bad query should resolve to none")
+r_amb <- resolve_player("te synthe", vroot$available)
+if (r_amb$status != "ambiguous" || nrow(r_amb$players) < 2L) fail("s4: prefix should be ambiguous")
+if (!identical(order(-r_amb$players$points, r_amb$players$player_id, method = "radix"),
+               seq_len(nrow(r_amb$players)))) fail("s4: resolve_player order not deterministic")
+expect_error(available_board(vroot, pos = "OL"), "available_board invalid pos")
+bd_rb <- available_board(vroot, pos = "RB", n = 5L)
+if (nrow(bd_rb) != 5L || any(bd_rb$pos != "RB"))          fail("s4: available_board filter/cap wrong")
+if (!identical(bd_rb$overall_rank, sort(bd_rb$overall_rank))) fail("s4: available_board not ordered")
+
+## resolve_player: a drafted exact name that is also the prefix of an available
+## name must still surface that available name (not short-circuit to "none");
+## a drafted exact name with no prefix/substring hit does resolve to "none".
+mini <- data.frame(
+  player_id = c("a", "b", "c"),
+  player    = c("Mike Williams", "Mike Williams Jr", "Joe Burrow"),
+  pos       = c("WR", "WR", "QB"), points = c(200, 150, 300),
+  overall_rank = 1:3, stringsAsFactors = FALSE
+)
+r_pfx <- resolve_player("mike williams", mini[2:3, ], mini)   # "Mike Williams" drafted
+if (r_pfx$status != "unique" || r_pfx$players$player_id != "b") {
+  fail("s4: drafted exact name suppressed an available prefix match")
+}
+r_gone <- resolve_player("joe burrow", mini[1:2, ], mini)      # "Joe Burrow" drafted
+if (r_gone$status != "none") fail("s4: drafted exact name with no other match should be none")
+
+## resolve_player never matches a blank normalized name.
+blank <- data.frame(player_id = c("x", "y"), player = c("!!!", "Real Player"),
+                    pos = c("WR", "WR"), points = c(10, 20), stringsAsFactors = FALSE)
+if (resolve_player("z", blank, blank)$status != "none") fail("s4: short query matched a blank name")
+
+unlink(s4_dir, recursive = TRUE)
+unlink(file.path(tempdir(), "warroom-s4-bad"), recursive = TRUE)
+cat("story 4 offline checks OK -- terminal loop + name resolution + rehearsal\n")
+
 ## --- Summary (I/O matrix: "smoke offline") -------------------------------
 cat(sprintf("smoke OK -- %d players in %s\n", n, snapshot_path))
 for (p in names(pos_tab)) cat(sprintf("  %-3s %3d\n", p, pos_tab[[p]]))
