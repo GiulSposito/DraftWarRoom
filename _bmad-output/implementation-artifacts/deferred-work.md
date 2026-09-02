@@ -65,3 +65,27 @@ Issues surfaced during review but intentionally not fixed in the story that foun
 - source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/5-roster-aware-recommendation-foundation.md`
   summary: `recommend_players()` takes ~130 ms per call on the dev machine (20-call benchmark, ~60-pick mid-draft state). It recomputes `.warroom_best_lineup` — which re-runs `.warroom_slot_counts` and re-sorts the whole roster by position — once per eligible candidate (~180×), and `.warroom_tier_cliff` re-filters the full `available` table per candidate.
   evidence: Comfortably under the terminal need, but CAP-11 / story 8 targets ~300 ms for the Shiny recommendation refresh and this is already ~40% of that budget before any UI overhead. A focused pass before or during story 8 should hoist the per-position sorted base lineup out of the candidate loop and pre-group `available` by position once.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/6-market-aware-wait-intelligence.md`
+  summary: `.warroom_following_user_pick()` in `R/recommendation.R` re-derives the snake schedule and the user's slot the same way `next_user_pick()` in `R/core.R` does, differing only by a strict `>` instead of `>=`; the two should be one function parametrized by the comparison / starting overall.
+  evidence: The story-6 frozen spec explicitly directed an internal helper and forbade touching `next_user_pick()`, so the duplication was accepted for this story. `make_snake_schedule()` (the real shared rule) is not duplicated, but AGENTS.md calls for no repeated core logic; consolidate when `next_user_pick()` can be renegotiated.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/6-market-aware-wait-intelligence.md`
+  summary: `.warroom_norm01()` returns all zeros when its input has a degenerate range, so a `wait_cost` vector with exactly one finite value (a single candidate at a drying position, the rest `NA`) contributes nothing to `decision_score` — the wait signal is silently dropped in exactly the scenario it matters most.
+  evidence: `.warroom_norm01` is unchanged story-5 code; story 6 introduces the mostly-`NA` `wait_cost` vector that exposes it. The story-6 spec relies on `.warroom_norm01` as-is ("sem renormalizar"). A fix (treat a lone finite value as its own max, or fall back to an absolute scale) belongs in a focused pass on the normalization helper.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/6-market-aware-wait-intelligence.md`
+  summary: `expected_best_next(pos)` values each surviving alternative with `.warroom_roster_value_of()` against the user's **pre-pick** `base_lineup`; after the user actually drafts at the current pick the roster changes, so the marginal value of next-pick alternatives is computed against a stale roster, biasing `wait_cost` for positions the user is about to fill.
+  evidence: The story-6 spec fixes the survivor scale as "contra o base_lineup do usuário" for determinism and simplicity. Whether alternatives should be valued against `roster + candidate` is a modeling question for calibration (story 7) once mock drafts can measure the effect.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/6-market-aware-wait-intelligence.md`
+  summary: `decision_score` uses the raw weights with no renormalization, so its reachable maximum is ~100 only when all four normalized terms are non-zero; whenever `wait_cost` degrades to `NA` (no `adp` column, no following pick, late draft) the ceiling drops to ~70 while the absolute label thresholds (`.warroom_take_now_score = 60`, `.warroom_best_value_adp`, etc.) stay fixed, making `TAKE NOW` / `BEST VALUE` materially harder to reach. Same effect for any user-supplied `weights` not summing to 1.
+  evidence: Pre-existing from story 5's 3-term raw-weight score; story 6 widens the gap between the full and degraded ceilings. Either renormalize the active weights or derive the thresholds from the achievable maximum; both are calibration concerns for story 7.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/6-market-aware-wait-intelligence.md`
+  summary: `recommend_players()` never checks that `state`'s user is actually on the clock. Called off-turn (e.g. `/rec` during an opponent's pick), `adp_value` and the `p_next` conditional denominator are computed against the opponent's `current_overall` while `following_pick` is the user's next real pick — a silently incoherent recommendation.
+  evidence: Pre-existing since story 5 (`adp_value` already used `current_overall`); story 6's `p_next` denominator compounds it. `scripts/draft.R` only auto-shows on the user's turn, but `/rec` is reachable anytime. A one-line guard (or an explicit "assuming your pick" note) closes it.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/6-market-aware-wait-intelligence.md`
+  summary: The `adp_sd` fallback in `.warroom_pick_sd()` (`.warroom_adp_sd_frac * adp`, used when the snapshot has `adp` but no `adp_sd` column) has no test — every story-6 test uses the synthetic fixture, which always carries `adp_sd`, or drops `adp`/`adp_sd` together.
+  evidence: `normalize_projections()` drops `adp` and `adp_sd` as a pair, so the fallback only fires for a hand-built or partial snapshot. Low risk, but the branch is uncovered; add a targeted assertion when the real preparation pipeline's ADP handling is revisited.

@@ -1,15 +1,20 @@
-## R/recommendation.R -- roster-aware recommendation foundation (story 5, CAP-8).
+## R/recommendation.R -- roster-aware + market-aware recommendation (stories 5-6,
+## CAP-8 / CAP-9).
 ##
-## Pure, offline: no shiny, no network, no file I/O, no RNG. Implements
-## components 1 and 4 of recommendation-algorithm.md:
+## Pure and deterministic: no UI layer, no network call, no file I/O, no RNG, no
+## Monte Carlo. `pnorm` is the only `stats` function used. Implements all four
+## components of recommendation-algorithm.md:
 ##   * lineup_value()             -- value of the best possible lineup for a roster
 ##   * default_decision_weights() -- the four calibration-hypothesis weights
 ##   * recommend_players()        -- rank available players, label + explain
 ##
-## p_next, expected_best_next, wait_cost and the full four-term configurable score
-## are story 6: the result data frame carries `p_next` and `wait_cost` columns but
-## both are NA_real_ here, and decision_score combines only the three components
-## available now (roster_value, tier_cliff, adp_value).
+## Component 2 (`p_next`): conditional survival to the user's *following* pick,
+## via a normal approximation of the pick distribution from `adp` / `adp_sd`,
+## computed in log space for tail stability, bounded to [0, 1]. Component 3
+## (`expected_best_next` / `wait_cost`): analytic, one pass per position, no
+## simulation. `p_next` and `wait_cost` are `NA_real_` when the snapshot has no
+## `adp` column, the user has no pick after this one, or a candidate's `adp` is
+## `NA`; the score then degrades to the components still available.
 ##
 ## Contracts: functional-core.md (catalog + invariants 7-9), rds-contracts.md
 ## (players table), recommendation-algorithm.md (components, guardrails, labels,
@@ -39,6 +44,26 @@
 .warroom_roster_need_slack <- 2L    # picks slack <= this -> critical mandatory need
 .warroom_roster_need_depth <- 3L    # <= this available same-pos in tier-or-better
 
+## --- story 6: market-aware wait intelligence (CAP-9) -------------------------
+## The "configurable draft standard deviation" of recommendation-algorithm.md
+## component 2: the pick distribution of a player is approximated by
+## Normal(adp, sd) with
+##   sd = max(.warroom_adp_sd_min, .warroom_adp_sd_mult * adp_sd_of_snapshot)
+## and, when the snapshot carries no `adp_sd`,
+##   adp_sd_of_snapshot = .warroom_adp_sd_frac * adp.
+.warroom_adp_sd_min  <- 3      # floor on the pick-distribution sd
+.warroom_adp_sd_mult <- 1      # multiplier on the snapshot's adp_sd
+.warroom_adp_sd_frac <- 0.20   # adp_sd fallback as a fraction of adp
+
+## expected_best_next(): how many surviving players per position enter the
+## analytic best-alternative pool (sorted by vor desc, player_id asc).
+.warroom_survivor_cap <- 12L
+
+## p_next label / reason thresholds.
+.warroom_take_now_pnext   <- 0.35   # p_next <= this -> TAKE NOW eligible / named in reason
+.warroom_can_wait_pnext   <- 0.80   # p_next >= this -> comfortably CAN WAIT
+.warroom_reason_wait_cost <- 5      # wait_cost >= this -> named in the reason string
+
 ## Result column order, exactly recommendation-algorithm.md "Recommendation output
 ## columns".
 .warroom_rec_columns <- c(
@@ -49,8 +74,9 @@
 
 #' The four decision weights (calibration hypotheses, not fixed truth).
 #'
-#' recommendation-algorithm.md "Combined score". `wait_cost` is carried for the
-#' story-6 contract but ignored by `recommend_players()` this story.
+#' recommendation-algorithm.md "Combined score": `roster_value`, `wait_cost`,
+#' `tier_cliff`, `adp_value`, used raw by `recommend_players()` (no
+#' renormalization).
 #'
 #' @return a named numeric vector summing to 1.
 default_decision_weights <- function() {
@@ -193,6 +219,124 @@ lineup_value <- function(roster, league) {
   0
 }
 
+## --- component 1 helper: roster value of one added player -------------------
+
+## Discounted bench option value: max(0, vor) * position factor (0 for K/DST or
+## an unknown position). RB/WR keep more bench value than QB2/TE2.
+.warroom_bench_value <- function(pos, vor) {
+  bf <- if (!is.na(pos) && pos %in% names(.warroom_bench_factor))
+    .warroom_bench_factor[[pos]] else 0
+  max(0, if (is.finite(vor)) vor else 0) * bf
+}
+
+## Roster value of adding one player at `pos` with value magnitude `val` (vor,
+## or points as the snapshot fallback) and raw `vor`: the marginal lineup gain
+## when the player would start (> 0), else the discounted bench option value.
+## Shared by the candidate loop and the expected-best-next survivor pool so both
+## ends of `wait_cost` sit on one scale (recommendation-algorithm.md component 3,
+## Design Notes "value(j) = roster_value of the survivor, not raw vor").
+.warroom_roster_value_of <- function(pos, val, vor, r_pos, r_val, base_lineup,
+                                     league) {
+  m <- .warroom_best_lineup(c(r_pos, pos), c(r_val, val), league) - base_lineup
+  if (is.finite(m) && m > 0) return(m)
+  .warroom_bench_value(pos, vor)
+}
+
+## --- component 2: p_next (conditional survival to the following user pick) ---
+
+## The user's pick *after* `current_overall`: the smallest snake-schedule
+## `overall` whose slot is the user's and which is strictly greater than
+## `current_overall`. `NA_integer_` when the user has no pick left after this
+## one. Distinct from `next_user_pick()` (">= current pick", frozen).
+.warroom_following_user_pick <- function(state, current_overall) {
+  co <- suppressWarnings(as.numeric(current_overall))
+  if (!is.finite(co)) return(NA_integer_)
+  user_slot <- match(state$user_team, state$team_order)
+  if (is.na(user_slot)) return(NA_integer_)
+  schedule <- make_snake_schedule(state$league$teams, state$league$rounds)
+  later <- schedule$overall[schedule$slot == user_slot & schedule$overall > co]
+  if (!length(later)) NA_integer_ else as.integer(min(later))
+}
+
+## Pick-distribution standard deviation from `adp` / `adp_sd`, vectorized:
+##   sd = max(min, mult * adp_sd)   with adp_sd = frac * adp when the snapshot
+## carries none. `NA` where both `adp_sd` and `adp` are unavailable.
+.warroom_pick_sd <- function(adp, adp_sd) {
+  adp    <- as.numeric(adp)
+  adp_sd <- as.numeric(adp_sd)
+  base   <- ifelse(is.finite(adp_sd), adp_sd, .warroom_adp_sd_frac * adp)
+  out    <- pmax(.warroom_adp_sd_min, .warroom_adp_sd_mult * base)
+  out[!is.finite(out)] <- NA_real_
+  out
+}
+
+## Conditional survival probability to `following_pick`, given the player is
+## still on the board at `current_overall`, vectorized:
+##   p_next = P(pick >= following_pick) / P(pick >= current_overall)
+## computed in log space (upper-tail `pnorm` with `log.p = TRUE`, difference,
+## `exp`) so the ratio stays finite when both tails are ~1e-12, then clamped to
+## [0, 1]. `NA` per element with a non-finite `adp` / `sd`, or for every element
+## when `current_overall` or `following_pick` is not finite. `pnorm` only -- no
+## RNG, no Monte Carlo. Operational aid, not a calibrated probability.
+.warroom_p_next <- function(adp, sd, current_overall, following_pick) {
+  adp <- as.numeric(adp); sd <- as.numeric(sd)
+  co  <- suppressWarnings(as.numeric(current_overall))
+  fp  <- suppressWarnings(as.numeric(following_pick))
+  out <- rep(NA_real_, length(adp))
+  ok  <- is.finite(adp) & is.finite(sd) & sd > 0 & is.finite(co) & is.finite(fp)
+  if (any(ok)) {
+    l1 <- pnorm((fp - adp[ok]) / sd[ok], lower.tail = FALSE, log.p = TRUE)
+    l0 <- pnorm((co - adp[ok]) / sd[ok], lower.tail = FALSE, log.p = TRUE)
+    out[ok] <- pmin(pmax(exp(l1 - l0), 0), 1)
+  }
+  out
+}
+
+## --- component 3: expected best alternative at the following user pick -------
+
+## Analytic expected value of the best surviving player at `pos` when the user
+## picks again, computed once per position (never per candidate). Sort the
+## position's available players (pre-eligibility `view$available`) by `vor` desc,
+## `player_id` asc; keep the first `.warroom_survivor_cap`; drop any with an
+## `NA` `p_next`. For that ordered pool
+##   p_best(j)            = p_next(j) * prod_{h < j} (1 - p_next(h))
+##   expected_best_next   = sum_j value(j) * p_best(j)
+## where `value(j)` is the survivor's `.warroom_roster_value_of` against the
+## user's `base_lineup` -- the same scale as the candidates. Scalar; 0 for an
+## empty pool.
+.warroom_expected_best_next <- function(available_pos, r_pos, r_val, base_lineup,
+                                        league, current_overall, following_pick) {
+  if (is.null(available_pos) || !is.data.frame(available_pos) ||
+      nrow(available_pos) == 0L) {
+    return(0)
+  }
+  vor    <- as.numeric(.warroom_col(available_pos, "vor"))
+  adp    <- as.numeric(.warroom_col(available_pos, "adp"))
+  adp_sd <- as.numeric(.warroom_col(available_pos, "adp_sd"))
+  val    <- .warroom_value_of(available_pos)
+  pos    <- as.character(available_pos$pos)
+  pid    <- as.character(available_pos$player_id)
+
+  ord  <- order(-vor, pid, method = "radix")
+  keep <- utils::head(ord, .warroom_survivor_cap)
+  vor  <- vor[keep]; adp <- adp[keep]; adp_sd <- adp_sd[keep]
+  val  <- val[keep]; pos <- pos[keep]
+
+  sd <- .warroom_pick_sd(adp, adp_sd)
+  p  <- .warroom_p_next(adp, sd, current_overall, following_pick)
+  good <- !is.na(p)
+  if (!any(good)) return(0)
+  p <- p[good]; val <- val[good]; vor <- vor[good]; pos <- pos[good]
+
+  surv_prev <- c(1, cumprod(1 - p)[-length(p)])   # prod_{h < j} (1 - p_next(h))
+  p_best    <- p * surv_prev
+  values    <- vapply(seq_along(p), function(j)
+    .warroom_roster_value_of(pos[j], val[j], vor[j], r_pos, r_val, base_lineup,
+                             league),
+    numeric(1))
+  sum(values * p_best)
+}
+
 ## Human-readable slot label for the reason string.
 .warroom_slot_label <- function(pos, need, flex_pos) {
   if (pos %in% names(need$by_pos) && need$by_pos[[pos]] > 0L) return(paste0(pos, " titular"))
@@ -203,7 +347,7 @@ lineup_value <- function(roster, league) {
 ## Assemble the deterministic explanation from the triggered fragments (max 4).
 .warroom_rec_reason <- function(marg, bench_val, vor, cliff_cond, tier, pos,
                                 tier_left, fills_need, slot_label,
-                                adp_value, qb2, te2) {
+                                adp_value, p_next, wait_cost, qb2, te2) {
   frag <- character(0)
   if (is.finite(marg) && marg > 0) {
     frag <- c(frag, sprintf("ganho de %+.1f de VOR no lineup", marg))
@@ -222,6 +366,13 @@ lineup_value <- function(roster, league) {
   }
   if (isTRUE(qb2)) frag <- c(frag, "penalizado como QB2 com titulares em aberto")
   if (isTRUE(te2)) frag <- c(frag, "penalizado como TE2 com titulares em aberto")
+  if (is.finite(p_next) && p_next <= .warroom_take_now_pnext) {
+    frag <- c(frag, sprintf(
+      "provavel que saia antes do seu proximo pick (p_next %.2f)", p_next))
+  }
+  if (is.finite(wait_cost) && wait_cost >= .warroom_reason_wait_cost) {
+    frag <- c(frag, sprintf("custo de esperar +%.1f de VOR", wait_cost))
+  }
   if (!length(frag)) return("melhor disponivel pelo valor combinado")
   paste(utils::head(frag, 4L), collapse = "; ")
 }
@@ -237,26 +388,30 @@ lineup_value <- function(roster, league) {
   )
 }
 
-#' Rank available players for the user's next pick (CAP-8).
+#' Rank available players for the user's next pick (CAP-8 / CAP-9).
 #'
 #' Deterministic: the same `state`, `projection_snapshot` and `weights` produce
 #' the same ordered data frame (ties broken by `player_id` ascending). Never
 #' returns a drafted player or one whose pick would strand a mandatory roster
-#' slot (functional-core.md invariants 7-9).
+#' slot (functional-core.md invariants 7-9). Pure, offline, no Monte Carlo / RNG.
 #'
 #' @param state a draft-state list (`R/core.R`).
 #' @param projection_snapshot the bound projection snapshot (`R/projections.R`).
-#' @param weights named numeric; needs `roster_value`, `tier_cliff`, `adp_value`
-#'   (`default_decision_weights()`). `wait_cost` is accepted and ignored.
+#' @param weights named numeric; needs `roster_value`, `wait_cost`, `tier_cliff`,
+#'   `adp_value` (`default_decision_weights()`), used raw (no renormalization).
 #' @param n integer, max rows to return.
 #' @return a data frame with columns
 #'   `player_id player pos points vor tier adp p_next marginal_value wait_cost
 #'   tier_cliff adp_value decision_score label reason`. `p_next` and `wait_cost`
-#'   are `NA_real_` this story.
+#'   are `NA_real_` when the snapshot has no `adp` column, the user has no pick
+#'   after this one, or the candidate's `adp` is `NA`; the score then drops to
+#'   the terms still available.
 recommend_players <- function(state, projection_snapshot,
                               weights = default_decision_weights(), n = 10L) {
-  if (!all(c("roster_value", "tier_cliff", "adp_value") %in% names(weights))) {
-    stop("recommend_players(): weights needs roster_value, tier_cliff, adp_value")
+  if (!all(c("roster_value", "wait_cost", "tier_cliff", "adp_value") %in%
+           names(weights))) {
+    stop("recommend_players(): weights needs roster_value, wait_cost, ",
+         "tier_cliff, adp_value")
   }
   n <- .warroom_whole_scalar(n, "recommend_players(): n")
 
@@ -307,23 +462,50 @@ recommend_players <- function(state, projection_snapshot,
   bench_val  <- numeric(nrow(cand))
   cliff      <- numeric(nrow(cand))
   for (i in seq_len(nrow(cand))) {
-    m <- .warroom_best_lineup(c(r_pos, cand$pos[i]), c(r_val, cand_val[i]),
-                              league) - base_lineup
-    marginal[i] <- m
-    bv <- max(0, if (is.finite(vor[i])) vor[i] else 0) *
-      (if (!is.na(cand$pos[i]) && cand$pos[i] %in% names(.warroom_bench_factor))
-        .warroom_bench_factor[[cand$pos[i]]] else 0)
-    bench_val[i]  <- bv
-    roster_val[i] <- if (m > 0) m else bv
+    marginal[i]   <- .warroom_best_lineup(c(r_pos, cand$pos[i]),
+                                          c(r_val, cand_val[i]), league) -
+                     base_lineup
+    bench_val[i]  <- .warroom_bench_value(cand$pos[i], vor[i])
+    roster_val[i] <- .warroom_roster_value_of(cand$pos[i], cand_val[i], vor[i],
+                                              r_pos, r_val, base_lineup, league)
     cliff[i]      <- .warroom_tier_cliff(cand[i, ], available)
   }
   adp_value <- ifelse(is.finite(adp) & is.finite(current_overall),
                       current_overall - adp, 0)
 
+  ## --- component 2/3: p_next + wait_cost (market-aware, CAP-9) ---------
+  ## Degrade to NA (score drops to the 3 terms still available) when the
+  ## snapshot has no `adp`, the user has no pick after this one, or -- per
+  ## candidate -- the candidate's `adp` is NA.
+  following_pick <- .warroom_following_user_pick(state, current_overall)
+  has_adp        <- "adp" %in% names(available)
+  cand_pick_sd   <- .warroom_pick_sd(adp, .warroom_col(cand, "adp_sd"))
+
+  p_next    <- rep(NA_real_, nrow(cand))
+  wait_cost <- rep(NA_real_, nrow(cand))
+  if (has_adp && !is.na(following_pick)) {
+    p_next <- .warroom_p_next(adp, cand_pick_sd, current_overall, following_pick)
+
+    ## expected_best_next once per position present among the candidates.
+    ebn <- vapply(unique(cand$pos[!is.na(cand$pos)]), function(pp) {
+      pool <- available[!is.na(available$pos) & available$pos == pp, , drop = FALSE]
+      .warroom_expected_best_next(pool, r_pos, r_val, base_lineup, league,
+                                  current_overall, following_pick)
+    }, numeric(1))
+
+    for (i in seq_len(nrow(cand))) {
+      if (is.na(p_next[i]) || is.na(cand$pos[i])) next
+      wait_cost[i] <- max(0, roster_val[i] - ebn[[cand$pos[i]]])
+    }
+  }
+
   ## --- score + guardrail penalties -------------------------------------
+  ## Four terms, raw weights (no renormalization). N() of an all-NA vector is
+  ## all zeros, so the wait term self-degrades to 0 when wait_cost is NA.
   score <- 100 * (weights[["roster_value"]] * .warroom_norm01(roster_val) +
-                    weights[["tier_cliff"]]  * .warroom_norm01(cliff) +
-                    weights[["adp_value"]]   * .warroom_norm01(adp_value))
+                    weights[["wait_cost"]]  * .warroom_norm01(wait_cost) +
+                    weights[["tier_cliff"]] * .warroom_norm01(cliff) +
+                    weights[["adp_value"]]  * .warroom_norm01(adp_value))
 
   fill_qb <- .warroom_pos_count(roster, "QB")
   fill_te <- .warroom_pos_count(roster, "TE")
@@ -343,6 +525,7 @@ recommend_players <- function(state, projection_snapshot,
   score <- score[ord]; marginal <- marginal[ord]; bench_val <- bench_val[ord]
   roster_val <- roster_val[ord]; cliff <- cliff[ord]; adp_value <- adp_value[ord]
   vor <- vor[ord]; tier <- tier[ord]; adp <- adp[ord]
+  p_next <- p_next[ord]; wait_cost <- wait_cost[ord]
   qb2 <- qb2[ord]; te2 <- te2[ord]
 
   ## --- labels + reasons ----------------------------------------------
@@ -363,8 +546,11 @@ recommend_players <- function(state, projection_snapshot,
       (slack <= .warroom_roster_need_slack ||
          in_tier_or_better <= .warroom_roster_need_depth)
 
-    label[i] <- if (i == 1L && (need_critical || cliff_cond) &&
-                    score[i] >= .warroom_take_now_score) {
+    take_now <- i == 1L && score[i] >= .warroom_take_now_score &&
+      ((is.finite(p_next[i]) && p_next[i] <= .warroom_take_now_pnext) ||
+         need_critical || cliff_cond)
+
+    label[i] <- if (take_now) {
       "TAKE NOW"
     } else if (need_critical) {
       "ROSTER NEED"
@@ -378,7 +564,7 @@ recommend_players <- function(state, projection_snapshot,
     reason[i] <- .warroom_rec_reason(
       marginal[i], bench_val[i], vor[i], cliff_cond, t, pos, tier_left,
       fills_need, .warroom_slot_label(pos, need, flex_pos),
-      adp_value[i], qb2[i], te2[i]
+      adp_value[i], p_next[i], wait_cost[i], qb2[i], te2[i]
     )
   }
 
@@ -390,9 +576,9 @@ recommend_players <- function(state, projection_snapshot,
     vor       = as.numeric(vor),
     tier      = as.numeric(tier),
     adp       = as.numeric(adp),
-    p_next    = NA_real_,
+    p_next    = as.numeric(p_next),
     marginal_value = as.numeric(marginal),
-    wait_cost = NA_real_,
+    wait_cost = as.numeric(wait_cost),
     tier_cliff = as.numeric(cliff),
     adp_value = as.numeric(adp_value),
     decision_score = as.numeric(score),

@@ -955,7 +955,8 @@ if (!identical(names(r0), .warroom_rec_columns)) fail("s5: result columns/order 
 if (nrow(r0) != 10L)                        fail("s5: expected 10 recommendations, got ", nrow(r0))
 if (any(r0$pos %in% c("K","DST")))          fail("s5: K/DST recommended in round 1")
 if (!all(r0$label %in% valid_labels))       fail("s5: unknown label: ", paste(setdiff(r0$label, valid_labels), collapse = ", "))
-if (!all(is.na(r0$p_next)) || !all(is.na(r0$wait_cost))) fail("s5: p_next / wait_cost not NA")
+if (!all(is.finite(r0$p_next) & r0$p_next >= 0 & r0$p_next <= 1)) fail("s5: p_next not finite in [0,1] with adp present")
+if (!all(is.finite(r0$wait_cost) & r0$wait_cost >= 0))           fail("s5: wait_cost not finite and >= 0 with adp present")
 if (!(r0$pos[1] %in% c("RB","WR")))         fail("s5: top pick not RB/WR on an empty roster")
 if (any(r0$player_id %in% st0$picks$player_id)) fail("s5: drafted player recommended")
 
@@ -1059,6 +1060,147 @@ if (!any(vapply(valid_labels, function(l) any(grepl(l, o5t, fixed = TRUE)), logi
 unlink(dirname(s5t_path), recursive = TRUE)
 
 cat("story 5 offline checks OK -- lineup value + marginal roster value + guardrails + labels\n")
+
+## --- story 6: market-aware wait intelligence (offline) -----------------
+## p_next / wait_cost / four-term decision_score. Pure, offline, deterministic,
+## no Monte Carlo. Reuses snap, team_order, cfg, fail, s4_run, team_line, has,
+## s5_state, st0, snap_noadp, full5 from the story-5 scope. tempdir() only.
+
+## (6a) Pick pessoal, snapshot com adp: p_next in [0,1], wait_cost >= 0 finite,
+## and deterministic across two calls (p_next + wait_cost + decision_score).
+s6_r0 <- recommend_players(st0, snap, n = 400L)
+if (!all(is.finite(s6_r0$p_next) & s6_r0$p_next >= 0 & s6_r0$p_next <= 1)) {
+  fail("s6: p_next not finite in [0,1] on an empty roster with adp present")
+}
+if (any(is.nan(s6_r0$p_next)) || any(is.infinite(s6_r0$p_next))) fail("s6: p_next NaN/Inf")
+if (!all(is.finite(s6_r0$wait_cost) & s6_r0$wait_cost >= 0)) fail("s6: wait_cost not finite >= 0")
+if (any(is.nan(s6_r0$wait_cost)) || any(is.infinite(s6_r0$wait_cost))) fail("s6: wait_cost NaN/Inf")
+if (!identical(s6_r0, recommend_players(st0, snap, n = 400L))) {
+  fail("s6: two calls not identical (p_next / wait_cost / order)")
+}
+
+## (6b) Monotonicity: within a position, a low-adp player is less likely to
+## survive to the following pick than a high-adp one.
+s6_rb  <- s6_r0[s6_r0$pos == "RB" & is.finite(s6_r0$adp), ]
+if (nrow(s6_rb) < 2L) fail("s6: not enough RB rows to check p_next monotonicity")
+s6_lo  <- s6_rb[which.min(s6_rb$adp), ]
+s6_hi  <- s6_rb[which.max(s6_rb$adp), ]
+if (!(s6_lo$p_next < s6_hi$p_next)) {
+  fail("s6: low-adp RB p_next not below high-adp RB p_next")
+}
+
+## (6c) Numerical stability far beyond adp: SYN-RB-001 (adp ~2) is still on the
+## board at pick 1 -- both tails are ~1e-8, the log-space ratio must stay finite.
+s6_r1 <- s6_r0[s6_r0$player_id == "SYN-RB-001", ]
+if (nrow(s6_r1) != 1L) fail("s6: SYN-RB-001 missing from the pick-1 board")
+if (!is.finite(s6_r1$p_next) || s6_r1$p_next < 0 || s6_r1$p_next > 1) {
+  fail("s6: SYN-RB-001 p_next not finite in [0,1]")
+}
+if (!any(grepl("p_next", s6_r0$reason)))       fail("s6: no reason names a low p_next")
+if (!any(grepl("custo de esperar", s6_r0$reason))) fail("s6: no reason names a wait cost")
+
+## (6d) Position drying: nearly every available RB has adp far below the
+## following pick -> high wait_cost on the RB candidate and, at rank 1 with a
+## high score, the TAKE NOW label; w_wait then changes the ordering.
+dry_pool <- c(sprintf("SYN-WR-%03d", 10:72), s5_worst(c("K", "DST")))
+st_dry   <- s5_state(c("SYN-RB-001", "SYN-RB-002", "SYN-QB-001",
+                       "SYN-TE-001", "SYN-RB-003", "SYN-RB-004"), pool = dry_pool)
+r_dry    <- recommend_players(st_dry, snap, n = 15L)
+wr_dry   <- r_dry[r_dry$pos == "WR", ]
+if (nrow(wr_dry) == 0L)                         fail("s6: no WR candidate in the drying scenario")
+if (max(wr_dry$wait_cost, na.rm = TRUE) < 5)    fail("s6: drying position did not raise wait_cost")
+if (r_dry$label[1] != "TAKE NOW" && !("TAKE NOW" %in% r_dry$label)) {
+  fail("s6: drying position did not yield a TAKE NOW label")
+}
+w_nowait <- default_decision_weights(); w_nowait["wait_cost"] <- 0
+r_nowait <- recommend_players(st_dry, snap, weights = w_nowait, n = 15L)
+if (identical(r_dry$player_id, r_nowait$player_id)) {
+  fail("s6: w_wait = 0 did not change the ordering when a position is drying")
+}
+
+## (6e) Deep position: many survivors with high p_next -> some low wait_cost
+## candidates and a CAN WAIT label on the pick-1 board.
+if (!any(s6_r0$wait_cost < 5))                  fail("s6: no low-wait_cost candidate on a deep board")
+if (!("CAN WAIT" %in% s6_r0$label))             fail("s6: no CAN WAIT label on a deep board")
+if (!any(s6_r0$p_next >= .warroom_can_wait_pnext)) fail("s6: no comfortably-surviving candidate on a deep board")
+
+## (6f) Snapshot without an adp column: p_next / wait_cost all NA, score still
+## finite and non-negative (three terms, no special case).
+r_noadp6 <- recommend_players(st0, snap_noadp)
+if (!all(is.na(r_noadp6$p_next)) || !all(is.na(r_noadp6$wait_cost))) {
+  fail("s6: p_next / wait_cost not all NA without an adp column")
+}
+if (!all(is.finite(r_noadp6$decision_score) & r_noadp6$decision_score >= 0)) {
+  fail("s6: decision_score not finite / non-negative without adp")
+}
+
+## (6g) No following user pick: state at the very last overall (pick 168), the
+## user on the clock, no pick after it -> p_next / wait_cost NA, score finite.
+s6_last  <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+s6_sched <- make_snake_schedule(12L, 14L)
+s6_u13   <- c("SYN-QB-001", "SYN-RB-001", "SYN-RB-002", "SYN-WR-001", "SYN-WR-002",
+              "SYN-TE-001", "SYN-RB-003", "SYN-K-001", "SYN-DST-001",
+              "SYN-QB-002", "SYN-WR-003", "SYN-RB-004", "SYN-TE-002")
+s6_slot1 <- s6_sched$overall[s6_sched$slot == 1L]
+s6_slot1 <- s6_slot1[s6_slot1 <= 167L]                    # 13 user overalls in 1..167
+if (length(s6_slot1) != length(s6_u13)) fail("s6: slot-1 overall count != 13")
+s6_others <- setdiff(snap$players$player_id, s6_u13)
+s6_ids    <- character(167L)
+s6_ids[s6_slot1] <- s6_u13
+s6_ids[setdiff(1:167, s6_slot1)] <- s6_others[seq_len(167L - length(s6_slot1))]
+s6_last$picks <- data.frame(
+  overall = 1:167, player_id = s6_ids,
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:167,
+  stringsAsFactors = FALSE)
+s6_vlast <- derive_draft_view(s6_last, snap)
+if (!identical(s6_vlast$current_overall, 168L))  fail("s6: last-pick state not at overall 168")
+if (!identical(s6_vlast$team_on_clock, "Team 01")) fail("s6: user not on the clock at overall 168")
+if (!is.na(.warroom_following_user_pick(s6_last, 168L))) fail("s6: following pick not NA at the last overall")
+r_last <- recommend_players(s6_last, snap)
+if (nrow(r_last) == 0L)                          fail("s6: no recs at the user's final pick")
+if (!all(is.na(r_last$p_next)) || !all(is.na(r_last$wait_cost))) {
+  fail("s6: p_next / wait_cost not NA when the user has no pick after this one")
+}
+if (!all(is.finite(r_last$decision_score)))      fail("s6: decision_score not finite at the final pick")
+
+## (6h) Per-player adp NA: those candidates get p_next / wait_cost NA; others,
+## with a real adp, are still computed.
+snap_pna <- snap
+s6_na_id <- c("SYN-WR-005", "SYN-WR-006")
+snap_pna$players$adp[snap_pna$players$player_id %in% s6_na_id] <- NA_real_
+r_pna <- recommend_players(st0, snap_pna, n = 400L)
+if (!all(r_pna$player_id %in% s6_na_id | is.finite(r_pna$p_next))) {
+  fail("s6: a candidate with a real adp still has NA p_next")
+}
+if (!all(is.na(r_pna$p_next[r_pna$player_id %in% s6_na_id]))) {
+  fail("s6: an adp-NA candidate has a non-NA p_next")
+}
+if (!all(is.na(r_pna$wait_cost[r_pna$player_id %in% s6_na_id]))) {
+  fail("s6: an adp-NA candidate has a non-NA wait_cost")
+}
+
+## (6i) Draft complete -> zero-row frame with the full column set (full5 from s5).
+if (nrow(recommend_players(full5, snap)) != 0L)  fail("s6: completed draft returned rows")
+
+## (6j) /rec in the terminal shows p_next and wait alongside score / label.
+s6t_path <- file.path(tempdir(), "warroom-s6t", "draft.rds")
+unlink(dirname(s6t_path), recursive = TRUE)
+o6t <- s4_run(c(team_line, "/rec", "/quit"), state_path = s6t_path)
+if (!has(o6t, "recomendacoes (top"))            fail("s6: /rec header missing")
+if (!has(o6t, "p_next"))                         fail("s6: /rec output has no p_next")
+if (!has(o6t, "wait "))                          fail("s6: /rec output has no wait column")
+unlink(dirname(s6t_path), recursive = TRUE)
+
+## (6k) No RNG / Monte Carlo / network markers in the recommendation source.
+s6_src <- readLines(.warroom_find_file("R/recommendation.R"), warn = FALSE)
+if (any(grepl("monte|rnorm|runif|\\bsample\\(|replicate|\\bboot\\b", s6_src))) {
+  fail("s6: recommendation.R names an RNG / Monte Carlo symbol")
+}
+if (any(grepl("shiny|http[s]?://|readRDS|saveRDS|scrape", s6_src))) {
+  fail("s6: recommendation.R names a shiny / network / file-IO symbol")
+}
+
+cat("story 6 offline checks OK -- p_next + expected_best_next + wait_cost + four-term score\n")
 
 ## --- Summary (I/O matrix: "smoke offline") -------------------------------
 cat(sprintf("smoke OK -- %d players in %s\n", n, snapshot_path))

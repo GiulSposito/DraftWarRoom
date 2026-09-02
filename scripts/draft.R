@@ -102,10 +102,11 @@ load_core()
     r <- recs[i, ]
     say(sprintf("  %2d. %-22s %-3s  score %5.1f  [%s]",
                 i, substr(r$player, 1L, 22L), r$pos, r$decision_score, r$label))
-    say(sprintf("      pts %s  VOR %s  tier %s  ADP %s  |  %s",
+    say(sprintf("      pts %s  VOR %s  tier %s  ADP %s  p_next %s  wait %s  |  %s",
                 fmt_num(r$points), fmt_num(r$vor, plus = TRUE),
                 if (is.na(r$tier)) "-" else as.character(r$tier),
-                fmt_num(r$adp), r$reason))
+                fmt_num(r$adp), fmt_num(r$p_next, digits = 2L),
+                fmt_num(r$wait_cost, plus = TRUE), r$reason))
   }
   invisible(NULL)
 }
