@@ -44,7 +44,7 @@ Keys, at least:
 |---|---|
 | `schema_version` | integer, currently `1` |
 | `projection_created_at` | `created_at` of the snapshot this draft is bound to |
-| `league` | list resolved from `config/league.yml`: `teams` (12), `roster` named integer vector, `flex_positions` (`c("RB","WR")`), and `rounds` — **derived, not stored**, as the sum of every `roster` slot (starters + bench) |
+| `league` | list resolved from `config/league.yml`: `teams` (12), `roster` named integer vector carrying **exactly** the slots `QB RB WR TE FLEX K DST BENCH`, `flex_positions` (`c("RB","WR")`), and `rounds` — **not an input**: derived as the sum of every `roster` slot when the league is resolved, then frozen into the state. `load_state()` re-checks `rounds == sum(roster)` |
 | `team_order` | character vector of team names in draft-slot order |
 | `user_team` | one entry from `team_order` |
 | `seed` | integer, for reproducible simulation/tie-breaks |
@@ -77,3 +77,5 @@ Current pick, team on the clock, per-team rosters, available players, best lineu
 7. Recommendations contain only available players.
 8. Recommendations must not make completing mandatory roster slots impossible.
 9. The same snapshot, configuration, and pick state produce the same recommendation order.
+10. A draft is bound to one projection snapshot: resuming (terminal or Shiny) is refused unless the loaded snapshot's `created_at` equals the state's `projection_created_at`.
+11. `league$rounds` always equals the sum of the `league$roster` slots.

@@ -93,6 +93,9 @@ load_core()
     say("(sem recomendacoes -- draft completo ou nenhum jogador elegivel)")
     return(invisible(NULL))
   }
+  if (isTRUE(attr(recs, "off_turn"))) {
+    say("  ** voce nao esta na vez -- estes numeros assumem que voce pica agora **")
+  }
   fmt_num <- function(x, digits = 1L, plus = FALSE) {
     if (length(x) != 1L || is.na(x)) return("-")
     sprintf(if (plus) paste0("%+.", digits, "f") else paste0("%.", digits, "f"), x)
@@ -154,10 +157,14 @@ run_draft <- function(con = NULL, out = stdout(),
   ## --- startup: resume or create ------------------------------------------
   if (file.exists(state_path)) {
     state <- load_state(state_path)
+    ## The league a resumed draft uses is already in state$league; config/league.yml
+    ## is not read here, so a missing or edited league file cannot block a resume.
+    .warroom_assert_snapshot_binding(state, snapshot)
     say("== retomando ", state_path, " (", nrow(state$picks), " picks) ==")
   } else {
-    teams <- cfg$league$teams
-    slot  <- cfg$user_slot
+    league <- load_league()
+    teams  <- league$teams
+    slot   <- cfg$user_slot
     say("== novo draft ==")
     say("digite os ", teams, " times em ordem de slot, separados por virgula:")
     state <- NULL
@@ -171,7 +178,7 @@ run_draft <- function(con = NULL, out = stdout(),
         next
       }
       state <- tryCatch(
-        new_draft(snapshot, nm, nm[slot], seed = cfg$seed, league = cfg$league),
+        new_draft(snapshot, nm, nm[slot], seed = cfg$seed, league = league),
         error = function(e) { say("ordem invalida: ", conditionMessage(e)); NULL }
       )
       if (!is.null(state)) break

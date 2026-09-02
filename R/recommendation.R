@@ -421,6 +421,22 @@ roster_slots <- function(roster, league) {
   paste(utils::head(frag, 4L), collapse = "; ")
 }
 
+## Attach the off-turn marker to a recommendation frame. recommend_players() is
+## coherent only for the user's own pick -- `p_next`'s conditional denominator
+## and `adp_value` both key off `view$current_overall`, so called off-turn (e.g.
+## `/rec` during an opponent's pick) every number silently assumes the user
+## picks now. Mark the frame with `attr(., "off_turn")` and, when it has rows,
+## prefix the top recommendation's reason so the terminal and Shiny -- which
+## already render `reason` -- surface it with no adapter change.
+.warroom_recs_result <- function(df, on_clock) {
+  attr(df, "off_turn") <- !isTRUE(on_clock)
+  if (!isTRUE(on_clock) && nrow(df) >= 1L && "reason" %in% names(df)) {
+    df$reason[1L] <- paste0(
+      "[assumindo seu proximo pick -- voce nao esta na vez] ", df$reason[1L])
+  }
+  df
+}
+
 ## Empty result with the contract columns and types.
 .warroom_empty_recs <- function() {
   data.frame(
@@ -449,7 +465,10 @@ roster_slots <- function(roster, league) {
 #'   tier_cliff adp_value decision_score label reason`. `p_next` and `wait_cost`
 #'   are `NA_real_` when the snapshot has no `adp` column, the user has no pick
 #'   after this one, or the candidate's `adp` is `NA`; the score then drops to
-#'   the terms still available.
+#'   the terms still available. Carries `attr(., "off_turn")`: `TRUE` when the
+#'   user is not on the clock (the numbers then assume the user picks now), and
+#'   in that case the top row's `reason` is prefixed with an explicit warning.
+#'   A finished draft is not off-turn.
 recommend_players <- function(state, projection_snapshot,
                               weights = default_decision_weights(), n = 10L) {
   if (!all(c("roster_value", "wait_cost", "tier_cliff", "adp_value") %in%
@@ -460,8 +479,12 @@ recommend_players <- function(state, projection_snapshot,
   n <- .warroom_whole_scalar(n, "recommend_players(): n")
 
   view <- derive_draft_view(state, projection_snapshot)
+  ## "On the clock" for the off-turn marker: a finished draft is not off-turn,
+  ## it is simply over (team_on_clock is NA then).
+  on_clock <- isTRUE(view$is_complete) ||
+    identical(view$team_on_clock, state$user_team)
   if (isTRUE(view$is_complete) || nrow(view$available) == 0L) {
-    return(.warroom_empty_recs())
+    return(.warroom_recs_result(.warroom_empty_recs(), on_clock))
   }
 
   league    <- state$league
@@ -486,7 +509,7 @@ recommend_players <- function(state, projection_snapshot,
     keep[i] <- TRUE
   }
   cand <- available[keep, , drop = FALSE]
-  if (nrow(cand) == 0L) return(.warroom_empty_recs())
+  if (nrow(cand) == 0L) return(.warroom_recs_result(.warroom_empty_recs(), on_clock))
 
   ## --- components -------------------------------------------------------
   r_pos <- if (is.null(roster) || nrow(roster) == 0L) character(0) else
@@ -633,5 +656,5 @@ recommend_players <- function(state, projection_snapshot,
   out <- out[, .warroom_rec_columns, drop = FALSE]
   out <- utils::head(out, n)
   rownames(out) <- NULL
-  out
+  .warroom_recs_result(out, on_clock)
 }

@@ -98,7 +98,7 @@ build_synthetic_projections <- function(seed = 1L) {
   season       <- as.integer(cfg$season)
   method       <- cfg$method
 
-  ## ~228 players: covers 168 picks and the board with room to spare.
+  ## ~228 players: covers the 180-pick draft and the board with room to spare.
   pos_counts <- c(QB = 24L, RB = 60L, WR = 72L, TE = 24L, K = 24L, DST = 24L)
   base_pts   <- c(QB = 380, RB = 340, WR = 330, TE = 240, K = 150, DST = 170)
   decay      <- c(QB = 7.0, RB = 4.2, WR = 3.0, TE = 4.6, K = 1.6, DST = 2.4)

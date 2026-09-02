@@ -1,0 +1,26 @@
+# config/league.yml -- league format for the Draft War Room.
+#
+# Single source of the league shape on the live draft path: R/core.R's league
+# resolver reads this file (via yaml::read_yaml) and the terminal / Shiny
+# adapters call load_league() to get it. config.R no longer holds `league`.
+#
+# The number of rounds is NOT listed here -- it is derived as the sum of every
+# roster slot below (starters + bench). For this league that is
+# 1 + 2 + 2 + 1 + 1 + 1 + 1 + 6 = 15 rounds, 12 x 15 = 180 picks. Bench depth
+# and round count therefore can never disagree.
+#
+# Only the initial league format is fully validated this epic (SPEC.md).
+
+teams: 12
+
+roster:
+  QB: 1
+  RB: 2
+  WR: 2
+  TE: 1
+  FLEX: 1
+  K: 1
+  DST: 1
+  BENCH: 6
+
+flex_positions: [RB, WR]

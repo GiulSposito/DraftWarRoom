@@ -8,7 +8,8 @@ Companion to `SPEC.md`. The plain functions under `R/` that hold all business ru
 |---|---|
 | `make_snake_schedule()` | generate the 180 turns for 12 teams × 15 rounds, serpentine |
 | `new_draft()` | create the initial `state/draft.rds` list; resolves the league from `config/league.yml` when none is passed |
-| league resolver | read `config/league.yml` (teams, roster slots, bench, flex positions) and derive `rounds` = sum of roster slots; the only YAML parsing on the live path |
+| `load_league()` | read `config/league.yml` — `teams`, a `roster` map carrying exactly `QB RB WR TE FLEX K DST BENCH`, `flex_positions` — and derive `rounds` = sum of roster slots. Rejects unknown/absent slots, non-integer counts, and flex positions not backed by a roster slot. The only YAML parsing on the live path |
+| snapshot-binding assert | refuse to resume a draft against a snapshot whose `created_at` differs from the state's `projection_created_at`; shared by the terminal and Shiny adapters |
 | `record_pick()` | validate and append a player to `picks` |
 | `undo_pick()` | remove the most recent pick |
 | `derive_draft_view()` | current pick, team on the clock, rosters, available players, lineup |
@@ -47,3 +48,5 @@ Deterministic: same `state` + `projection_snapshot` + `weights` → same ordered
 7. Recommendations contain only available players.
 8. Recommendations never make mandatory roster slots impossible to complete.
 9. Same snapshot + config + pick state → same recommendation order.
+10. Resume is refused unless the loaded snapshot's `created_at` matches the state's `projection_created_at`.
+11. `league$rounds` always equals `sum(league$roster)`.

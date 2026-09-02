@@ -2,13 +2,10 @@
 ## Values only, no business logic. Sourced by adapters (scripts/, tests/, app.R).
 ## Business rules live in R/*.R and never here.
 
-## League format -- the only fully validated configuration this epic.
-league <- list(
-  teams  = 12L,
-  rounds = 14L,
-  roster = c(QB = 1L, RB = 2L, WR = 2L, TE = 1L, FLEX = 1L, K = 1L, DST = 1L, BENCH = 6L),
-  flex_positions = c("RB", "WR")
-)
+## League format lives in config/league.yml (read on the live draft path by
+## R/core.R's load_league()), not here -- rounds is derived there as the sum of
+## the roster slots, so bench depth and round count can never disagree. config.R
+## keeps only the per-draft-day knobs below.
 
 ## Projection snapshot parameters (see rds-contracts.md / preparation-pipeline.md).
 season <- 2026L
@@ -40,5 +37,6 @@ paths <- list(
   projections = file.path("data", "projections.rds"),
   raw_scrape  = file.path("data", "raw_scrape.rds"),
   draft_state = file.path("state", "draft.rds"),
-  scoring     = file.path("config", "score_settings.yml")
+  scoring     = file.path("config", "score_settings.yml"),
+  league      = file.path("config", "league.yml")
 )

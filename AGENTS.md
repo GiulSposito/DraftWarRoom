@@ -4,7 +4,7 @@
 ## DraftWarRoom
 
 War Room de draft de fantasy NFL: local, mono-usuário, em R, para um único draft snake de
-12 times, Full PPR, 14 rounds. Prepara projeções antes do draft, simula drafts no terminal,
+12 times, Full PPR, 15 rounds (= soma das vagas de roster). Prepara projeções antes do draft, simula drafts no terminal,
 opera o draft ao vivo e gera recomendações de pick determinísticas e explicáveis. Intent
 autoritativo: `docs/fantasy-warroom-bmad-intent.md`. Fluxo BMAD: `docs/bmad-workmode.md`.
 Spec e stories (após `bmad-spec`): `_bmad-output/specs/spec-fantasy-warroom/`.
@@ -18,6 +18,8 @@ Spec e stories (após `bmad-spec`): `_bmad-output/specs/spec-fantasy-warroom/`.
   autenticação, background workers ou injeção de dependência. Persistência é RDS.
 - Nunca fazer chamada de rede no caminho do draft ao vivo (`scripts/draft.R`, `app.R`, `R/`).
   `ffanalytics` e qualquer scraping só em `scripts/prepare.R`.
+- `yaml` é lido em exatamente dois lugares: `scripts/prepare.R` (`config/score_settings.yml`)
+  e o resolver de liga do core em `R/core.R` (`config/league.yml`, no caminho ao vivo).
 - Nunca rodar Monte Carlo no caminho de recomendação; o cálculo de custo de espera é
   analítico e determinístico.
 - `data/projections.rds` é imutável durante um draft.
@@ -34,8 +36,9 @@ Spec e stories (após `bmad-spec`): `_bmad-output/specs/spec-fantasy-warroom/`.
   `app.R`. Sem fórmula ou regra de negócio duplicada neles.
 - Contratos RDS (`data/projections.rds`, `state/draft.rds`) e contratos das funções core:
   `docs/fantasy-warroom-bmad-intent.md`.
-- Ainda não existe código — repositório greenfield. Estrutura alvo no intent doc, seção
-  "Repository shape".
+- Formato da liga: `config/league.yml` (times, roster com `BENCH`, `flex_positions`), lido
+  por `load_league()` em `R/core.R`. `rounds` não é armazenado — é derivado como
+  `sum(roster)`. `config.R` guarda só season/method/vor_baseline/user_team/user_slot/seed/paths.
 
 ## Running and verifying
 
@@ -46,6 +49,8 @@ estes alvos, todos via `Rscript`:
 - `make simulate` -> `Rscript scripts/simulate.R`. Rodar também após qualquer mudança em
   recomendação ou simulação.
 - `make prepare` -> `Rscript scripts/prepare.R` (único caminho que chama `ffanalytics`).
+  Recusa sobrescrever um `data/projections.rds` existente (imutável durante um draft) —
+  passar `--force` para reconstruir (guarda um `.bak` do snapshot anterior; escrita atômica).
 - `make draft` -> `Rscript scripts/draft.R`.
 - `make app` -> `Rscript -e 'shiny::runApp(".")'`.
 

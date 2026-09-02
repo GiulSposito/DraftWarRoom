@@ -293,7 +293,7 @@ opponent_pick <- function(available, roster, league, market_value) {
 #' Run one complete seeded mock draft (CAP-10).
 #'
 #' The market draw (`.warroom_market_value()`) happens once, under one seeded
-#' block; every one of the 168 picks after that is deterministic. On the
+#' block; every one of the teams x rounds picks after that is deterministic. On the
 #' `user_team`'s turn: `strategy = "warroom"` calls `recommend_players()` (the
 #' real algorithm, no parallel heuristic) and takes its top pick;
 #' `"adp"`/`"vor"` use the same eligibility filter as `opponent_pick()`,
@@ -307,7 +307,8 @@ opponent_pick <- function(available, roster, league, market_value) {
 #' @param seed integer, drives the one market draw.
 #' @param strategy one of "adp", "vor", "warroom" -- the user's own strategy.
 #' @param weights decision weights, used only when `strategy == "warroom"`.
-#' @param league optional league list; defaults to config.R's `league`.
+#' @param league optional league list (its `rounds`, if any, is re-derived from
+#'   `roster`); `NULL` loads `config/league.yml` via `load_league()`.
 #' @return `list(state, metrics, rosters_valid)`. `metrics` covers only
 #'   `user_team`: `starter_points`, `starter_vor`, `bench_vor`, `pos_counts`
 #'   (named QB..DST), `adp_surplus`, `reach_count`, `roster_valid`, `qb_round`,

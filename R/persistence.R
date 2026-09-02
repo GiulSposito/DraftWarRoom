@@ -65,6 +65,18 @@
       any(!nzchar(names(league$roster)))) {
     stop("draft state league$roster must be a fully named numeric vector")
   }
+  if (anyNA(league$roster) || any(league$roster %% 1 != 0) ||
+      any(league$roster < 0)) {
+    stop("draft state league$roster has non-integral / negative / NA slot count(s)")
+  }
+  roster_sum <- sum(league$roster)
+  if (length(league$rounds) != 1L || is.na(league$rounds) ||
+      league$rounds != roster_sum) {
+    stop("draft state league$rounds (",
+         paste(deparse(league$rounds), collapse = ""),
+         ") must equal the sum of the roster slots (", roster_sum,
+         "); rounds is derived, never stored independently")
+  }
   if (length(x$team_order) < 1L || !is.character(x$team_order)) {
     stop("draft state team_order must be a non-empty character vector")
   }

@@ -56,7 +56,9 @@ ui <- fluidPage(
   ),
 
   fluidRow(
-    column(12, h4("Recomendacoes"), tableOutput("recs_table"))
+    column(12, h4("Recomendacoes"),
+           div(style = "color:#b00; font-weight:bold;", textOutput("recs_note")),
+           tableOutput("recs_table"))
   ),
 
   fluidRow(
@@ -98,16 +100,17 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     }
     snapshot <- load_projections(proj_path)
   }
-
   ## --- startup: resume or create -----------------------------------------
   ## No draft-order form (not in operations.md "Shiny (CAP-11)") -- a fresh
   ## draft uses the same default team_order / user_team recovery semantics as
-  ## the terminal's config-driven start, saved immediately.
+  ## the terminal's config-driven start, saved immediately. A resumed draft's
+  ## league is already in state$league, so config/league.yml is read only for a
+  ## fresh draft.
   init_state <- tryCatch({
     if (file.exists(state_path)) {
       load_state(state_path)
     } else {
-      league <- cfg$league
+      league <- load_league()
       st <- new_draft(snapshot, sprintf("Team %02d", seq_len(league$teams)),
                       cfg$user_team, seed = cfg$seed, league = league)
       save_state(st, state_path)
@@ -117,6 +120,9 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     stop("server(): could not load or create the draft state at '", state_path,
         "' (", conditionMessage(e), ")", call. = FALSE)
   })
+  ## Same draft<->snapshot binding the terminal enforces on resume -- raised
+  ## outside the load/create tryCatch so its own message reaches the operator.
+  .warroom_assert_snapshot_binding(init_state, snapshot)
   state <- reactiveVal(init_state)
 
   ## record_pick()/undo_pick() then save_state() BEFORE updating the
@@ -190,6 +196,12 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
               v$round_on_clock, v$current_overall, v$team_on_clock,
               if (is.na(nup)) "-" else as.character(nup))
     }
+  })
+
+  output$recs_note <- renderText({
+    if (isTRUE(attr(recs(), "off_turn")))
+      "Voce nao esta na vez -- estes numeros assumem que voce pica agora."
+    else ""
   })
 
   output$recs_table <- renderTable({

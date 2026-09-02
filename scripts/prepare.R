@@ -1,11 +1,13 @@
 #!/usr/bin/env Rscript
 ## scripts/prepare.R -- pre-draft projection preparation (CAP-1).
 ##
-## The ONLY file in this repository that may call `ffanalytics` or `yaml`, and
-## the only one that touches the network. It is an adapter: it orchestrates
-## `ffanalytics` + the functional core and owns no formula of its own. Every
-## calculation (scoring merge, field mapping, snapshot assembly) lives in
-## R/projections.R (`warroom_scoring()`, `normalize_projections()`).
+## The ONLY file in this repository that may call `ffanalytics` or touch the
+## network. It reads YAML (`config/score_settings.yml`); the one other YAML read
+## in the repo is R/core.R's league resolver (`config/league.yml`), on the live
+## path. It is an adapter: it orchestrates `ffanalytics` + the functional core
+## and owns no formula of its own. Every calculation (scoring merge, field
+## mapping, snapshot assembly) lives in R/projections.R (`warroom_scoring()`,
+## `normalize_projections()`).
 ##
 ## Pipeline (preparation-pipeline.md):
 ##   1. load core + config.R
@@ -19,16 +21,19 @@
 ##
 ## Flags:
 ##   --rescrape   ignore an existing data/raw_scrape.rds and scrape fresh
+##   --force      overwrite an existing data/projections.rds (refused otherwise:
+##                the snapshot is immutable for the duration of a draft)
 ##
 ## Run: make prepare   (Rscript scripts/prepare.R)
 
 args     <- commandArgs(trailingOnly = TRUE)
-unknown  <- setdiff(args, "--rescrape")
+unknown  <- setdiff(args, c("--rescrape", "--force"))
 if (length(unknown)) {
   stop("unknown argument(s): ", paste(unknown, collapse = ", "),
-       " -- the only accepted flag is --rescrape")
+       " -- accepted flags are --rescrape and --force")
 }
 rescrape <- "--rescrape" %in% args
+force    <- "--force"    %in% args
 
 source("R/load_core.R")
 load_core()
@@ -45,6 +50,26 @@ stopifnot(
   is.list(paths), !is.null(paths$scoring),
   !is.null(season), !is.null(method), !is.null(vor_baseline)
 )
+
+## --- Immutability guard -----------------------------------------------------
+## data/projections.rds must not change during a draft (SPEC "Constraints").
+## Refuse to overwrite an existing snapshot -- before any scrape -- unless the
+## operator explicitly passes --force.
+if (file.exists(paths$projections)) {
+  if (!force) {
+    stop("refusing to overwrite an existing '", paths$projections,
+         "' -- it is immutable for the duration of a draft. Pass --force to ",
+         "rebuild it (a .bak of the current snapshot is kept).")
+  }
+  ## --force: back the current snapshot up now, before anything can fail.
+  if (!file.copy(paths$projections, paste0(paths$projections, ".bak"),
+                 overwrite = TRUE)) {
+    stop("could not back up the current '", paths$projections,
+         "' to '.bak' -- aborting before any rebuild")
+  }
+  message("--force: backed up the current snapshot to ",
+          paths$projections, ".bak")
+}
 
 ## --- Step 1-3: league scoring by copy-and-override -----------------------------
 if (!file.exists(paths$scoring)) {
@@ -108,7 +133,15 @@ snap <- normalize_projections(
 )
 
 dir.create(dirname(paths$projections), showWarnings = FALSE, recursive = TRUE)
-saveRDS(snap, paths$projections)
+## Atomic write: a crash mid-write must never leave a truncated snapshot in
+## place (the --force path deliberately rewrites this live-critical file). The
+## .bak of any prior snapshot was already taken by the immutability guard above.
+snap_tmp <- paste0(paths$projections, ".tmp")
+saveRDS(snap, snap_tmp)
+if (!file.rename(snap_tmp, paths$projections)) {
+  unlink(snap_tmp)
+  stop("could not move the new snapshot into place at '", paths$projections, "'")
+}
 
 ## --- Summary ----------------------------------------------------------------
 pos_tab <- table(factor(snap$players$pos,

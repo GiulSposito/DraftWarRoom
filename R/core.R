@@ -44,7 +44,8 @@
 #' `teams * rounds` turns.
 #'
 #' @param teams integer, number of draft slots (12 for the initial league).
-#' @param rounds integer, number of rounds (14 for the initial league).
+#' @param rounds integer, number of rounds (15 for the initial league, i.e. the
+#'   sum of every roster slot).
 #' @return a data frame with columns `overall` (1..teams*rounds), `round`,
 #'   `pick_in_round`, `slot`, all integer, ordered by `overall`.
 make_snake_schedule <- function(teams, rounds) {
@@ -66,47 +67,177 @@ make_snake_schedule <- function(teams, rounds) {
   )
 }
 
-## Resolve and shape-check the league list: explicit `league` arg wins, else
-## config.R (loaded in an isolated environment, same pattern as projections.R).
-.warroom_resolve_league <- function(league) {
-  if (is.null(league)) {
-    cfg    <- .warroom_load_config()
-    league <- cfg$league
-    if (is.null(league)) {
-      stop("new_draft(): config.R has no `league` list and none was passed")
+#' Resolve the league format from `config/league.yml` (CAP-3, the live-path source).
+#'
+#' Reads the YAML league file, validates its shape, and derives `rounds` as the
+#' sum of every roster slot (starters + bench). `rounds` is not an input -- it is
+#' derived here (and re-derived when `new_draft()` gets an explicit league), then
+#' frozen into `state$league` at draft creation -- so bench depth and round count
+#' can never disagree. This and `scripts/prepare.R` are the only YAML reads in
+#' the repository.
+#'
+#' @param path optional path to the league YAML; `NULL` walks up from the
+#'   working directory looking for `config/league.yml`.
+#' @return a list: `teams` (integer), `roster` (named integer vector, includes
+#'   `BENCH`), `flex_positions` (character), `rounds` (integer, `sum(roster)`).
+load_league <- function(path = NULL) {
+  if (is.null(path)) {
+    path <- .warroom_find_file(file.path("config", "league.yml"))
+    if (is.null(path)) {
+      stop("load_league(): config/league.yml not found from '", getwd(),
+           "' or any parent; the live path needs it for the league format")
     }
   }
+  if (!file.exists(path)) {
+    stop("load_league(): no league file at '", path, "'")
+  }
+  raw <- tryCatch(
+    yaml::read_yaml(path),
+    error = function(e) {
+      stop("load_league(): '", path, "' is not readable YAML (",
+           conditionMessage(e), ")")
+    }
+  )
+  ## The YAML file is the human-authored, fully-validated format: require every
+  ## slot spelled out (use 0 for none) so a forgotten line is caught, not
+  ## silently defaulted.
+  .warroom_shape_league(raw, source = path, require_all_slots = TRUE)
+}
+
+## The complete roster-slot vocabulary. The resolved roster always carries
+## exactly these keys (absent ones filled with 0 for an explicit `league` arg),
+## so `sum(roster)` (the derived round count) can never silently omit a slot and
+## `.warroom_slot_counts()`'s per-position defaults never quietly stand in.
+.warroom_roster_slots  <- c("QB", "RB", "WR", "TE", "FLEX", "K", "DST", "BENCH")
+.warroom_flex_eligible <- c("RB", "WR", "TE")
+
+## Validate a raw league mapping (from YAML or passed explicitly to new_draft())
+## and derive `rounds` = sum(roster). Any `rounds` key in the input is ignored --
+## it is always derived, which is what makes the bench-vs-rounds discrepancy
+## impossible to reintroduce. Unknown slots are always rejected; absent known
+## slots are rejected only when `require_all_slots` (the YAML path), otherwise
+## filled with 0. `source` names the origin for error messages.
+.warroom_shape_league <- function(league, source = "league",
+                                  require_all_slots = FALSE) {
   if (!is.list(league)) {
-    stop("new_draft(): league must be a list with teams, rounds, roster, ",
+    stop("league (", source, ") must be a mapping with teams, roster, ",
          "flex_positions; got ", class(league)[1L])
   }
-  required <- c("teams", "rounds", "roster", "flex_positions")
+  required <- c("teams", "roster", "flex_positions")
   missing_keys <- setdiff(required, names(league))
   if (length(missing_keys)) {
-    stop("new_draft(): league is missing key(s): ",
+    stop("league (", source, ") is missing key(s): ",
          paste(missing_keys, collapse = ", "))
   }
 
-  teams  <- .warroom_whole_scalar(league$teams,  "new_draft(): league$teams")
-  rounds <- .warroom_whole_scalar(league$rounds, "new_draft(): league$rounds")
+  teams <- .warroom_whole_scalar(league$teams, paste0("league (", source, ") teams"))
 
-  roster <- league$roster
-  if (!is.numeric(roster) || is.null(names(roster))) {
-    stop("new_draft(): league$roster must be a named integer vector")
+  ## roster: a named map of scalar numbers, covering exactly the known slots.
+  rmap <- league$roster
+  if (!is.list(rmap) && !is.numeric(rmap)) {
+    stop("league (", source, ") roster must be a mapping of slot -> count; got ",
+         class(rmap)[1L])
   }
-  bad_roster <- is.na(roster) | roster %% 1 != 0
+  rmap <- as.list(rmap)
+  if (is.null(names(rmap)) || any(!nzchar(names(rmap)))) {
+    stop("league (", source, ") roster must be a fully named slot -> count map")
+  }
+  bad_shape <- names(rmap)[!vapply(rmap, function(v)
+    is.numeric(v) && length(v) == 1L && !is.na(v), logical(1))]
+  if (length(bad_shape)) {
+    stop("league (", source, ") roster slot(s) not a single number: ",
+         paste(bad_shape, collapse = ", "))
+  }
+  unknown <- setdiff(names(rmap), .warroom_roster_slots)
+  if (length(unknown)) {
+    stop("league (", source, ") roster has unknown slot(s): ",
+         paste(unknown, collapse = ", "), " (allowed: ",
+         paste(.warroom_roster_slots, collapse = ", "), ")")
+  }
+  absent <- setdiff(.warroom_roster_slots, names(rmap))
+  if (require_all_slots && length(absent)) {
+    stop("league (", source, ") roster is missing slot(s): ",
+         paste(absent, collapse = ", "),
+         " -- every slot must be listed, use 0 for none")
+  }
+  roster <- vapply(.warroom_roster_slots, function(s)
+    if (s %in% names(rmap)) as.numeric(rmap[[s]]) else 0, numeric(1))
+  bad_roster <- roster %% 1 != 0 | roster < 0
   if (any(bad_roster)) {
-    stop("new_draft(): league$roster has non-integral / NA value(s): ",
+    stop("league (", source, ") roster has non-integral / negative value(s): ",
          paste(names(roster)[bad_roster], collapse = ", "))
   }
   storage.mode(roster) <- "integer"
 
+  rounds <- sum(roster)
+  if (rounds < 1L) {
+    stop("league (", source, ") roster slots sum to ", rounds,
+         "; need at least 1 round")
+  }
+
+  ## flex_positions: non-empty, drawn from the flex-eligible set, and each must
+  ## be a roster slot the team actually carries.
+  flex_pos <- as.character(league$flex_positions)
+  if (roster[["FLEX"]] > 0L) {
+    if (!length(flex_pos)) {
+      stop("league (", source, ") has FLEX slots but flex_positions is empty")
+    }
+    bad_flex <- setdiff(flex_pos, .warroom_flex_eligible)
+    if (length(bad_flex)) {
+      stop("league (", source, ") flex_positions has ineligible entr(ies): ",
+           paste(bad_flex, collapse = ", "), " (allowed: ",
+           paste(.warroom_flex_eligible, collapse = ", "), ")")
+    }
+    no_slot <- flex_pos[roster[flex_pos] <= 0L]
+    if (length(no_slot)) {
+      stop("league (", source, ") flex_positions names position(s) with no ",
+           "roster slot: ", paste(no_slot, collapse = ", "))
+    }
+  }
+
   list(
     teams          = teams,
-    rounds         = rounds,
     roster         = roster,
-    flex_positions = as.character(league$flex_positions)
+    flex_positions = flex_pos,
+    rounds         = as.integer(rounds)
   )
+}
+
+#' Assert a draft is being resumed against the projection snapshot it was
+#' started on (rds-contracts.md invariant 10).
+#'
+#' A draft state carries `projection_created_at`, the `created_at` of the
+#' snapshot it is bound to. Resuming against a rebuilt snapshot would silently
+#' corrupt every derived view, so both adapters call this before entering their
+#' loop / rendering. `stop()`s with an explaining message on any mismatch,
+#' including a missing or `NA` timestamp on either side.
+#'
+#' @param state a draft-state list (`load_state()` output).
+#' @param snapshot the projection snapshot loaded for this session.
+#' @return invisible(TRUE) when the binding holds.
+.warroom_assert_snapshot_binding <- function(state, snapshot) {
+  a <- suppressWarnings(as.numeric(state$projection_created_at))
+  b <- suppressWarnings(as.numeric(snapshot$created_at))
+  if (length(a) != 1L || length(b) != 1L || is.na(a) || is.na(b)) {
+    stop("cannot verify the draft<->snapshot binding: ",
+         "projection_created_at is ", format(state$projection_created_at),
+         " and the snapshot created_at is ", format(snapshot$created_at))
+  }
+  if (!isTRUE(all.equal(a, b))) {
+    stop("this draft is bound to a projection snapshot from ",
+         format(state$projection_created_at, usetz = TRUE),
+         " but the loaded snapshot is from ",
+         format(snapshot$created_at, usetz = TRUE),
+         " -- refusing to resume against the wrong snapshot")
+  }
+  invisible(TRUE)
+}
+
+## Resolve the league for new_draft(): an explicit list is shape-checked and its
+## `rounds` re-derived from `roster`; `NULL` loads `config/league.yml`.
+.warroom_resolve_league <- function(league) {
+  if (is.null(league)) return(load_league())
+  .warroom_shape_league(league, source = "explicit league arg")
 }
 
 #' Create the initial draft-state list (CAP-4).
@@ -121,7 +252,8 @@ make_snake_schedule <- function(teams, rounds) {
 #'   must equal `league$teams` and names must be unique.
 #' @param user_team one entry of `team_order`.
 #' @param seed integer, for reproducible simulation / tie-breaks (story 7).
-#' @param league optional league list; defaults to config.R's `league`.
+#' @param league optional league list (its `rounds`, if any, is re-derived from
+#'   `roster`); `NULL` loads `config/league.yml` via `load_league()`.
 #' @return the state list matching `state/draft.rds` in rds-contracts.md.
 new_draft <- function(snapshot, team_order, user_team, seed = 1L, league = NULL) {
   if (!is.list(snapshot) || !inherits(snapshot$created_at, "POSIXct")) {

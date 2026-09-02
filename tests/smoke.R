@@ -11,6 +11,9 @@ load_core()
 
 ## config.R values, loaded once, reused for cross-checks below.
 cfg <- .warroom_load_config()
+## League format now lives in config/league.yml (read on the live path), not
+## config.R. `rounds` is derived = sum(roster) = 15 for the initial league.
+league <- load_league()
 
 fail <- function(...) {
   message("SMOKE FAIL: ", ...)
@@ -386,19 +389,95 @@ if (!grepl("OL", msg, fixed = TRUE)) fail("normalize: invalid-pos error omits 'O
 
 cat("story 2 offline checks OK -- warroom_scoring + normalize_projections\n")
 
+## --- league resolver: config/league.yml -> derived rounds (offline) ------
+## load_league() reads the YAML league file and derives rounds = sum(roster).
+lg <- load_league()
+if (!identical(lg$teams, 12L))             fail("league: teams != 12")
+if (!identical(lg$rounds, 15L))            fail("league: rounds not derived to 15, got ", lg$rounds)
+if (!identical(lg$rounds, as.integer(sum(lg$roster)))) fail("league: rounds != sum(roster)")
+if (!identical(names(lg$roster), .warroom_roster_slots)) fail("league: roster slot set wrong")
+if (!is.integer(lg$roster))               fail("league: roster not coerced to integer")
+if (!identical(as.character(lg$flex_positions), c("RB", "WR"))) fail("league: flex_positions wrong")
+
+lg_dir <- file.path(tempdir(), "warroom-league"); dir.create(lg_dir, showWarnings = FALSE)
+wl <- function(txt, name) { p <- file.path(lg_dir, name); writeLines(txt, p); p }
+## A complete, valid roster block to vary one line at a time.
+full_roster <- c("roster:", "  QB: 1", "  RB: 2", "  WR: 2", "  TE: 1",
+                 "  FLEX: 1", "  K: 1", "  DST: 1", "  BENCH: 6")
+lyml <- function(teams = "teams: 12", roster = full_roster,
+                 flex = "flex_positions: [RB, WR]", name) {
+  wl(c(teams, roster, flex), name)
+}
+
+msg <- expect_error(load_league(file.path(lg_dir, "nope.yml")), "league: missing file")
+if (!grepl("nope.yml", msg, fixed = TRUE)) fail("league: missing-file error omits path: ", msg)
+
+msg <- expect_error(load_league(lyml(roster = character(0), name = "no-roster.yml")),
+                    "league: no roster key")
+if (!grepl("roster", msg)) fail("league: missing-roster error omits 'roster': ", msg)
+
+msg <- expect_error(load_league(lyml(
+  roster = setdiff(full_roster, "  FLEX: 1"), name = "no-flex-slot.yml")),
+  "league: missing a roster slot")
+if (!grepl("FLEX", msg)) fail("league: missing-slot error omits FLEX: ", msg)
+
+msg <- expect_error(load_league(lyml(
+  roster = c(full_roster, "  IR: 2"), name = "unknown-slot.yml")),
+  "league: unknown roster slot")
+if (!grepl("IR", msg)) fail("league: unknown-slot error omits IR: ", msg)
+
+msg <- expect_error(load_league(lyml(
+  roster = c("roster:", "  QB: 1.5", "  RB: 2", "  WR: 2", "  TE: 1",
+             "  FLEX: 1", "  K: 1", "  DST: 1", "  BENCH: 6"),
+  name = "frac-roster.yml")), "league: fractional roster slot")
+if (!grepl("non-integral", msg)) fail("league: fractional-roster error wording: ", msg)
+
+msg <- expect_error(load_league(lyml(
+  roster = c("roster:", "  QB: 1", "  RB: -1", "  WR: 2", "  TE: 1",
+             "  FLEX: 1", "  K: 1", "  DST: 1", "  BENCH: 6"),
+  name = "neg-roster.yml")), "league: negative roster slot")
+if (!grepl("negative", msg)) fail("league: negative-roster error wording: ", msg)
+
+msg <- expect_error(load_league(lyml(teams = "teams: 0", name = "bad-teams.yml")),
+                    "league: teams < 1")
+if (!grepl("whole number", msg)) fail("league: bad-teams error wording: ", msg)
+
+msg <- expect_error(load_league(lyml(flex = "flex_positions: []", name = "no-flexpos.yml")),
+                    "league: empty flex_positions with FLEX slots")
+if (!grepl("flex_positions is empty", msg)) fail("league: empty-flexpos error wording: ", msg)
+
+msg <- expect_error(load_league(lyml(flex = "flex_positions: [QB, RB]", name = "bad-flexpos.yml")),
+                    "league: ineligible flex position")
+if (!grepl("ineligible", msg)) fail("league: ineligible-flexpos error wording: ", msg)
+
+msg <- expect_error(load_league(lyml(
+  roster = c("roster:", "  QB: 1", "  RB: 2", "  WR: 2", "  TE: 0",
+             "  FLEX: 1", "  K: 1", "  DST: 1", "  BENCH: 7"),
+  flex = "flex_positions: [RB, WR, TE]", name = "flex-no-slot.yml")),
+  "league: flex position with no roster slot")
+if (!grepl("no roster slot", msg)) fail("league: flex-no-slot error wording: ", msg)
+
+## A zero FLEX slot makes flex_positions irrelevant -- no error even if empty.
+lg_noflex <- load_league(lyml(
+  roster = c("roster:", "  QB: 1", "  RB: 2", "  WR: 3", "  TE: 1",
+             "  FLEX: 0", "  K: 1", "  DST: 1", "  BENCH: 6"),
+  flex = "flex_positions: []", name = "ok-zero-flex.yml"))
+if (!identical(lg_noflex$rounds, 15L)) fail("league: zero-FLEX rounds not 15")
+
 ## --- story 3: snake schedule, draft state, RDS persistence (offline) -----
 ## Every row of the story-3 I/O & Edge-Case matrix. tempdir() only -- state/ is
 ## never touched. No network.
 
 team_order <- sprintf("Team %02d", 1:12)
 
-## Schedule: 168 turns, correct serpentine reversals, round/pick_in_round values.
-sched <- make_snake_schedule(cfg$league$teams, cfg$league$rounds)
-if (!identical(nrow(sched), 168L)) fail("schedule: expected 168 rows, got ", nrow(sched))
+## Schedule: 180 turns (12 x 15), correct serpentine reversals, round/pick_in_round.
+if (!identical(league$rounds, 15L)) fail("league: rounds should derive to 15, got ", league$rounds)
+sched <- make_snake_schedule(league$teams, league$rounds)
+if (!identical(nrow(sched), 180L)) fail("schedule: expected 180 rows, got ", nrow(sched))
 if (!identical(names(sched), c("overall", "round", "pick_in_round", "slot"))) {
   fail("schedule: wrong columns: ", paste(names(sched), collapse = ", "))
 }
-if (!identical(sched$overall, 1:168))       fail("schedule: overall not sequential 1..168")
+if (!identical(sched$overall, 1:180))       fail("schedule: overall not sequential 1..180")
 if (sched$slot[1] != 1L || sched$slot[12] != 12L) fail("schedule: round 1 not ascending 1..12")
 if (sched$slot[13] != 12L) fail("schedule: pick 13 should be slot 12, got ", sched$slot[13])
 if (sched$slot[24] != 1L)  fail("schedule: pick 24 should be slot 1, got ", sched$slot[24])
@@ -432,7 +511,7 @@ if (!identical(names(d0$picks), c("overall", "player_id", "entered_at"))) {
 if (!is.integer(d0$picks$overall))          fail("new_draft: picks$overall not integer")
 if (!is.character(d0$picks$player_id))      fail("new_draft: picks$player_id not character")
 if (!inherits(d0$picks$entered_at, "POSIXct")) fail("new_draft: picks$entered_at not POSIXct")
-if (!identical(d0$league$teams, 12L) || !identical(d0$league$rounds, 14L)) {
+if (!identical(d0$league$teams, 12L) || !identical(d0$league$rounds, 15L)) {
   fail("new_draft: league teams/rounds wrong")
 }
 if (is.null(names(d0$league$roster))) fail("new_draft: roster not a named vector")
@@ -440,15 +519,25 @@ if (!is.integer(d0$league$roster))   fail("new_draft: roster not coerced to inte
 if (!identical(d0$user_team, "Team 01")) fail("new_draft: user_team not stored")
 if (!identical(d0$seed, 1L))             fail("new_draft: default seed not 1L")
 
-## new_draft with explicit seed + explicit (non-config) league.
-custom_league <- list(teams = 4L, rounds = 3L,
+## new_draft with explicit seed + explicit (non-config) league. `rounds` is not
+## a key -- it is derived as sum(roster) = 3, and a `rounds` key would be ignored.
+## An explicit league may list only the slots it uses; the rest default to 0.
+custom_league <- list(teams = 4L,
                       roster = c(QB = 1L, RB = 1L, FLEX = 1L),
-                      flex_positions = c("RB", "WR"))
+                      flex_positions = c("RB"))
 dc <- new_draft(snap, sprintf("T%d", 1:4), "T2", seed = 7L, league = custom_league)
 if (!identical(dc$seed, 7L))          fail("new_draft: explicit seed not stored")
 if (!identical(dc$league$teams, 4L) || !identical(dc$league$rounds, 3L)) {
-  fail("new_draft: explicit league not used")
+  fail("new_draft: explicit league not used / rounds not derived to 3")
 }
+if (!identical(names(dc$league$roster), .warroom_roster_slots)) {
+  fail("new_draft: explicit league roster not filled to the full slot set")
+}
+if (!identical(unname(dc$league$roster["WR"]), 0L)) fail("new_draft: absent slot not filled with 0")
+## A `rounds` key in an explicit league is ignored -- still derived from roster.
+dc2 <- new_draft(snap, sprintf("T%d", 1:4), "T2",
+                 league = c(custom_league, list(rounds = 99L)))
+if (!identical(dc2$league$rounds, 3L)) fail("new_draft: explicit rounds key not ignored")
 if (nrow(make_snake_schedule(dc$league$teams, dc$league$rounds)) != 12L) {
   fail("new_draft: custom-league schedule size wrong")
 }
@@ -496,18 +585,18 @@ if (!grepl("SYN-NOPE-999", msg)) fail("record_pick: unknown-id error omits id: "
 msg <- expect_error(record_pick(d1, pid1, snap), "record_pick repeat id")
 if (!grepl(pid1, msg, fixed = TRUE)) fail("record_pick: repeat-id error omits id: ", msg)
 
-## Draft full: 168 picks, another record_pick -> error citing 168.
-fixed_ea <- rep(as.POSIXct("2026-09-01 12:00:00", tz = "UTC"), 200)
+## Draft full: 180 picks, another record_pick -> error citing 180.
+fixed_ea <- rep(as.POSIXct("2026-09-01 12:00:00", tz = "UTC"), 220)
 full_state <- d0
 full_state$picks <- data.frame(
-  overall    = 1:168,
-  player_id  = snap$players$player_id[1:168],
-  entered_at = fixed_ea[1:168],
+  overall    = 1:180,
+  player_id  = snap$players$player_id[1:180],
+  entered_at = fixed_ea[1:180],
   stringsAsFactors = FALSE
 )
-msg <- expect_error(record_pick(full_state, snap$players$player_id[169], snap),
+msg <- expect_error(record_pick(full_state, snap$players$player_id[181], snap),
                     "record_pick draft full")
-if (!grepl("168", msg)) fail("record_pick: full-draft error omits 168: ", msg)
+if (!grepl("180", msg)) fail("record_pick: full-draft error omits 180: ", msg)
 
 ## undo_pick + availability.
 u1 <- undo_pick(d2)
@@ -579,9 +668,9 @@ if (nrow(v13$rosters[["Team 01"]]) != 1L)  fail("view: Team 01 should still hold
 v14 <- derive_draft_view(mk_state(14L), snap)   # pick 15 on the clock
 if (v14$team_on_clock != "Team 10")        fail("view: pick 15 should be Team 10, got ", v14$team_on_clock)
 
-## derive_draft_view at the end (168 picks).
+## derive_draft_view at the end (180 picks).
 vend <- derive_draft_view(full_state, snap)
-if (!isTRUE(vend$is_complete))      fail("view: is_complete not TRUE at 168 picks")
+if (!isTRUE(vend$is_complete))      fail("view: is_complete not TRUE at 180 picks")
 if (!is.na(vend$current_overall))   fail("view: current_overall not NA at end")
 if (!is.na(vend$team_on_clock))     fail("view: team_on_clock not NA at end")
 
@@ -596,7 +685,7 @@ st12$picks <- data.frame(overall = 1:12, player_id = snap$players$player_id[1:12
 if (!identical(next_user_pick(st12), 13L)) {
   fail("next_user_pick: Team 12 back-to-back should be 13, got ", next_user_pick(st12))
 }
-if (!is.na(next_user_pick(full_state))) fail("next_user_pick: exhausted (Team 01, 168 picks) should be NA")
+if (!is.na(next_user_pick(full_state))) fail("next_user_pick: exhausted (Team 01, 180 picks) should be NA")
 
 ## save_state / load_state: round trip, atomic .bak, no stray .tmp, dir created.
 sp <- file.path(tempdir(), "warroom-s3", "draft.rds")
@@ -672,12 +761,18 @@ if (!grepl("duplicate", msg) || !grepl("dupe", msg, fixed = TRUE)) {
 }
 
 bad_cap <- function(b) {
-  b$picks <- data.frame(overall = seq_len(169), player_id = sprintf("p%03d", 1:169),
-                        entered_at = fixed_ea[rep(1L, 169)], stringsAsFactors = FALSE)
+  b$picks <- data.frame(overall = seq_len(181), player_id = sprintf("p%03d", 1:181),
+                        entered_at = fixed_ea[rep(1L, 181)], stringsAsFactors = FALSE)
   b
 }
 msg <- expect_error(load_state(mk_bad(bad_cap, "s3-bad-cap.rds")), "load_state over capacity")
-if (!grepl("168", msg)) fail("load_state: over-capacity error omits 168: ", msg)
+if (!grepl("180", msg)) fail("load_state: over-capacity error omits 180: ", msg)
+
+## load_state rejects a state whose league$rounds != sum(roster) (rounds derived).
+msg <- expect_error(
+  load_state(mk_bad(function(b) { b$league$rounds <- 14L; b }, "s3-bad-rounds.rds")),
+  "load_state rounds != sum(roster)")
+if (!grepl("sum of the roster", msg)) fail("load_state: derived-rounds error wording: ", msg)
 
 bad_pid_type <- function(b) {
   b$picks <- data.frame(overall = 1L, player_id = 1L,
@@ -835,11 +930,11 @@ o_bad2 <- s4_run(c(paste(sprintf("Team %02d", 1:13), collapse = ","),
 if (sum(grepl("ordem invalida", o_bad2)) < 2L) fail("s4: 13-name / duplicate order not both rejected")
 unlink(file.path(tempdir(), "warroom-s4-bad2"), recursive = TRUE)
 
-## (2) Resume and complete the rehearsal to all 168 picks.
+## (2) Resume and complete the rehearsal to all 180 picks.
 o2 <- s4_run(snap$players$player)   # every full name; drafted ones resolve to none
-if (!has(o2, "=== DRAFT COMPLETO -- 168 picks ==="))  fail("s4: rehearsal did not complete 168 picks")
+if (!has(o2, "=== DRAFT COMPLETO -- 180 picks ==="))  fail("s4: rehearsal did not complete 180 picks")
 d_final <- load_state(s4_path)
-if (nrow(d_final$picks) != 168L)                      fail("s4: final draft not 168 picks")
+if (nrow(d_final$picks) != 180L)                      fail("s4: final draft not 180 picks")
 if (anyDuplicated(d_final$picks$player_id))           fail("s4: duplicate pick in completed draft")
 vf <- derive_draft_view(d_final, snap)
 if (!isTRUE(vf$is_complete))                          fail("s4: final view not is_complete")
@@ -884,6 +979,27 @@ blank <- data.frame(player_id = c("x", "y"), player = c("!!!", "Real Player"),
                     pos = c("WR", "WR"), points = c(10, 20), stringsAsFactors = FALSE)
 if (resolve_player("z", blank, blank)$status != "none") fail("s4: short query matched a blank name")
 
+## Draft<->snapshot binding: resuming against a snapshot whose created_at does
+## not match the one the draft was started on is refused before the loop.
+snap_future <- snap
+snap_future$created_at <- snap$created_at + 3600
+bind_state  <- new_draft(snap_future, team_order, "Team 01", league = league)
+bind_path   <- file.path(tempdir(), "warroom-s4-bind", "draft.rds")
+unlink(dirname(bind_path), recursive = TRUE)
+save_state(bind_state, bind_path)
+bci <- textConnection("/quit"); bco <- textConnection("s4_bind_out", open = "w", local = TRUE)
+msg <- expect_error(run_draft(con = bci, out = bco, snapshot = snap, state_path = bind_path),
+                    "s4: resume against a mismatched snapshot")
+tryCatch({ close(bco); close(bci) }, error = function(e) NULL)
+if (!grepl("wrong snapshot", msg)) fail("s4: binding-mismatch error wording: ", msg)
+## Resuming with the snapshot the draft WAS bound to works (covered elsewhere for
+## the 0-pick case; here just confirm the same file is fine with its own snapshot).
+bci2 <- textConnection("/quit"); bco2 <- textConnection("s4_bind_ok", open = "w", local = TRUE)
+run_draft(con = bci2, out = bco2, snapshot = snap_future, state_path = bind_path)
+close(bco2); close(bci2)
+if (!any(grepl("retomando", s4_bind_ok, fixed = TRUE))) fail("s4: bound snapshot did not resume")
+unlink(dirname(bind_path), recursive = TRUE)
+
 unlink(s4_dir, recursive = TRUE)
 unlink(file.path(tempdir(), "warroom-s4-bad"), recursive = TRUE)
 cat("story 4 offline checks OK -- terminal loop + name resolution + rehearsal\n")
@@ -905,16 +1021,16 @@ if (abs(sum(w5) - 1) > 1e-9) fail("s5: default weights do not sum to 1")
 rl5 <- data.frame(pos    = c("QB","RB","RB","RB","WR","WR","TE"),
                   points = c(380, 250, 210, 190, 300, 240, 180),
                   stringsAsFactors = FALSE)
-lv5 <- lineup_value(rl5, cfg$league)   # points fallback: 380 + 460 + 540 + 180 + FLEX(190)
+lv5 <- lineup_value(rl5, league)   # points fallback: 380 + 460 + 540 + 180 + FLEX(190)
 if (abs(lv5 - 1750) > 1e-6)           fail("s5: lineup_value (points fallback) != 1750, got ", lv5)
-if (lineup_value(rl5[0, ], cfg$league) != 0) fail("s5: empty roster lineup_value != 0")
+if (lineup_value(rl5[0, ], league) != 0) fail("s5: empty roster lineup_value != 0")
 ## vor is the value currency when present -- a huge `points` must not override it.
-if (lineup_value(data.frame(pos = "RB", vor = 100, points = 9999), cfg$league) != 100) {
+if (lineup_value(data.frame(pos = "RB", vor = 100, points = 9999), league) != 100) {
   fail("s5: lineup_value did not prefer vor over points")
 }
 
 ## Snake slot-1 overalls -> the user's pick numbers.
-s5_sched  <- make_snake_schedule(12L, 14L)
+s5_sched  <- make_snake_schedule(league$teams, league$rounds)
 s5_slot1  <- s5_sched$overall[s5_sched$slot == 1L]
 s5_worst  <- function(exclude_pos = character(0)) {
   p <- snap$players[order(snap$players$points, snap$players$player_id), ]
@@ -934,7 +1050,7 @@ s5_ids <- function(user_ids, pool) {
   ids
 }
 s5_state <- function(user_ids, pool = s5_worst()) {
-  st <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+  st <- new_draft(snap, team_order, "Team 01", league = league)
   ids <- s5_ids(user_ids, pool)
   if (length(ids)) {
     st$picks <- data.frame(
@@ -949,7 +1065,7 @@ s5_state <- function(user_ids, pool = s5_worst()) {
 valid_labels <- c("TAKE NOW","ROSTER NEED","TIER CLIFF","BEST VALUE","CAN WAIT")
 
 ## (a) Empty roster, user on the clock.
-st0 <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+st0 <- new_draft(snap, team_order, "Team 01", league = league)
 r0  <- recommend_players(st0, snap)
 if (!identical(names(r0), .warroom_rec_columns)) fail("s5: result columns/order wrong")
 if (nrow(r0) != 10L)                        fail("s5: expected 10 recommendations, got ", nrow(r0))
@@ -983,11 +1099,12 @@ if (nrow(ter) == 0L || !any(grepl("TE2", ter$reason))) fail("s5: TE2 penalty not
 rm5 <- recommend_players(s5_state(c("SYN-WR-001","SYN-RB-001","SYN-WR-002")), snap)
 if (any(rm5$pos %in% c("K","DST")))          fail("s5: K/DST recommended mid draft")
 
-## (f) K/DST forced + strand guard: 12-man roster, 2 picks left, only K & DST needed.
-roster12 <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
-              "SYN-TE-001","SYN-RB-003","SYN-RB-004","SYN-RB-005","SYN-WR-003",
-              "SYN-WR-004","SYN-TE-002")
-rf5 <- recommend_players(s5_state(roster12, pool = s5_worst(c("K","DST"))), snap)
+## (f) K/DST forced + strand guard: 13-man roster, 2 picks left in a 15-round
+## draft, only K & DST still mandatory -> nothing else is eligible.
+roster_pre_kdst <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
+                     "SYN-TE-001","SYN-RB-003","SYN-RB-004","SYN-RB-005","SYN-WR-003",
+                     "SYN-WR-004","SYN-TE-002","SYN-WR-005")
+rf5 <- recommend_players(s5_state(roster_pre_kdst, pool = s5_worst(c("K","DST"))), snap)
 if (nrow(rf5) == 0L)                         fail("s5: no recommendations when K/DST forced")
 if (!all(rf5$pos %in% c("K","DST")))         fail("s5: non-mandatory (bench) candidate not stranded out")
 if (!any(rf5$label %in% c("ROSTER NEED","TAKE NOW"))) fail("s5: forced K/DST not labelled a roster need")
@@ -1014,9 +1131,9 @@ if (any(rbv$adp_value[rbv$label == "BEST VALUE"] < 8)) fail("s5: BEST VALUE with
 ## (i) Draft complete -> zero-row frame with the full column set.
 full5 <- s5_state(NULL)
 full5$picks <- data.frame(
-  overall    = 1:168,
-  player_id  = snap$players$player_id[1:168],
-  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:168,
+  overall    = 1:180,
+  player_id  = snap$players$player_id[1:180],
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:180,
   stringsAsFactors = FALSE
 )
 rcomp <- recommend_players(full5, snap)
@@ -1037,14 +1154,14 @@ if (!all(is.na(rna$adp)) || !all(rna$adp_value == 0)) fail("s5: adp fallback wro
 ## (k) n caps the result; n larger than the eligible set returns fewer rows.
 r3 <- recommend_players(st0, snap, n = 3L)
 if (nrow(r3) != 3L)                          fail("s5: n = 3 did not cap the result")
-## 13-man roster needing only DST, 1 pick left, and 22 of 24 DSTs already gone:
-## the strand + squeeze filters leave exactly 2 eligible players.
-roster13 <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
+## 14-man roster needing only DST, 1 pick left in a 15-round draft, and 22 of 24
+## DSTs already gone: the strand + squeeze filters leave exactly 2 eligible.
+roster14 <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
               "SYN-TE-001","SYN-RB-003","SYN-K-001","SYN-RB-004","SYN-RB-005",
-              "SYN-WR-003","SYN-WR-004","SYN-TE-002")
+              "SYN-WR-003","SYN-WR-004","SYN-TE-002","SYN-WR-005")
 dst_gone  <- sprintf("SYN-DST-%03d", 1:22)
 r_few <- recommend_players(
-  s5_state(roster13, pool = c(dst_gone, s5_worst(c("K","DST")))), snap, n = 10L)
+  s5_state(roster14, pool = c(dst_gone, s5_worst(c("K","DST")))), snap, n = 10L)
 if (nrow(r_few) != 2L)                       fail("s5: n > eligible not honored, got ", nrow(r_few))
 if (!all(r_few$pos == "DST"))                fail("s5: squeeze left a non-DST candidate")
 
@@ -1134,28 +1251,30 @@ if (!all(is.finite(r_noadp6$decision_score) & r_noadp6$decision_score >= 0)) {
   fail("s6: decision_score not finite / non-negative without adp")
 }
 
-## (6g) No following user pick: state at the very last overall (pick 168), the
-## user on the clock, no pick after it -> p_next / wait_cost NA, score finite.
-s6_last  <- new_draft(snap, team_order, "Team 01", league = cfg$league)
-s6_sched <- make_snake_schedule(12L, 14L)
-s6_u13   <- c("SYN-QB-001", "SYN-RB-001", "SYN-RB-002", "SYN-WR-001", "SYN-WR-002",
+## (6g) No following user pick: state just before the user's very last pick,
+## the user on the clock, no pick after it -> p_next / wait_cost NA, score finite.
+s6_last  <- new_draft(snap, team_order, "Team 01", league = league)
+s6_sched <- make_snake_schedule(league$teams, league$rounds)
+user_overalls <- s6_sched$overall[s6_sched$slot == 1L]     # Team 01's picks (15)
+last_user     <- max(user_overalls)                         # round 15, slot 1
+n_before      <- last_user - 1L                             # picks already made
+s6_uN    <- user_overalls[-length(user_overalls)]           # the earlier user overalls
+s6_u_ids <- c("SYN-QB-001", "SYN-RB-001", "SYN-RB-002", "SYN-WR-001", "SYN-WR-002",
               "SYN-TE-001", "SYN-RB-003", "SYN-K-001", "SYN-DST-001",
-              "SYN-QB-002", "SYN-WR-003", "SYN-RB-004", "SYN-TE-002")
-s6_slot1 <- s6_sched$overall[s6_sched$slot == 1L]
-s6_slot1 <- s6_slot1[s6_slot1 <= 167L]                    # 13 user overalls in 1..167
-if (length(s6_slot1) != length(s6_u13)) fail("s6: slot-1 overall count != 13")
-s6_others <- setdiff(snap$players$player_id, s6_u13)
-s6_ids    <- character(167L)
-s6_ids[s6_slot1] <- s6_u13
-s6_ids[setdiff(1:167, s6_slot1)] <- s6_others[seq_len(167L - length(s6_slot1))]
+              "SYN-QB-002", "SYN-WR-003", "SYN-RB-004", "SYN-TE-002", "SYN-RB-005")
+if (length(s6_uN) != length(s6_u_ids)) fail("s6: user pre-final overall count wrong")
+s6_others <- setdiff(snap$players$player_id, s6_u_ids)
+s6_ids    <- character(n_before)
+s6_ids[s6_uN] <- s6_u_ids
+s6_ids[setdiff(seq_len(n_before), s6_uN)] <- s6_others[seq_len(n_before - length(s6_uN))]
 s6_last$picks <- data.frame(
-  overall = 1:167, player_id = s6_ids,
-  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:167,
+  overall = seq_len(n_before), player_id = s6_ids,
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + seq_len(n_before),
   stringsAsFactors = FALSE)
 s6_vlast <- derive_draft_view(s6_last, snap)
-if (!identical(s6_vlast$current_overall, 168L))  fail("s6: last-pick state not at overall 168")
-if (!identical(s6_vlast$team_on_clock, "Team 01")) fail("s6: user not on the clock at overall 168")
-if (!is.na(.warroom_following_user_pick(s6_last, 168L))) fail("s6: following pick not NA at the last overall")
+if (!identical(s6_vlast$current_overall, last_user)) fail("s6: not at the user's last overall")
+if (!identical(s6_vlast$team_on_clock, "Team 01"))   fail("s6: user not on the clock at the last overall")
+if (!is.na(.warroom_following_user_pick(s6_last, last_user))) fail("s6: following pick not NA at the last overall")
 r_last <- recommend_players(s6_last, snap)
 if (nrow(r_last) == 0L)                          fail("s6: no recs at the user's final pick")
 if (!all(is.na(r_last$p_next)) || !all(is.na(r_last$wait_cost))) {
@@ -1182,14 +1301,24 @@ if (!all(is.na(r_pna$wait_cost[r_pna$player_id %in% s6_na_id]))) {
 ## (6i) Draft complete -> zero-row frame with the full column set (full5 from s5).
 if (nrow(recommend_players(full5, snap)) != 0L)  fail("s6: completed draft returned rows")
 
-## (6j) /rec in the terminal shows p_next and wait alongside score / label.
+## (6j) /rec in the terminal shows p_next and wait alongside score / label; on
+## the user's turn there is no off-turn banner.
 s6t_path <- file.path(tempdir(), "warroom-s6t", "draft.rds")
 unlink(dirname(s6t_path), recursive = TRUE)
 o6t <- s4_run(c(team_line, "/rec", "/quit"), state_path = s6t_path)
 if (!has(o6t, "recomendacoes (top"))            fail("s6: /rec header missing")
 if (!has(o6t, "p_next"))                         fail("s6: /rec output has no p_next")
 if (!has(o6t, "wait "))                          fail("s6: /rec output has no wait column")
+if (has(o6t, "voce nao esta na vez"))            fail("s6: off-turn banner shown on the user's own turn")
 unlink(dirname(s6t_path), recursive = TRUE)
+
+## (6j2) /rec off-turn (after the user's pick 1, Team 02 on the clock) prints the
+## banner in the terminal.
+s6t2_path <- file.path(tempdir(), "warroom-s6t2", "draft.rds")
+unlink(dirname(s6t2_path), recursive = TRUE)
+o6t2 <- s4_run(c(team_line, "RB Synthetic 01", "/rec", "/quit"), state_path = s6t2_path)
+if (!has(o6t2, "voce nao esta na vez"))          fail("s6: off-turn /rec banner missing in terminal")
+unlink(dirname(s6t2_path), recursive = TRUE)
 
 ## (6k) No RNG / Monte Carlo / network markers in the recommendation source.
 s6_src <- readLines(.warroom_find_file("R/recommendation.R"), warn = FALSE)
@@ -1200,6 +1329,31 @@ if (any(grepl("shiny|http[s]?://|readRDS|saveRDS|scrape", s6_src))) {
   fail("s6: recommendation.R names a shiny / network / file-IO symbol")
 }
 
+## (6l) Off-turn guard: recommend_players() called when the user is NOT on the
+## clock marks the frame and annotates the top reason -- p_next/adp_value assume
+## the user picks now, so the caller must be told.
+ot_on  <- new_draft(snap, team_order, "Team 01", league = league)   # overall 1, user on clock
+ot_off <- record_pick(ot_on, snap$players$player_id[1], snap)       # overall 2, Team 02 on clock
+r_on  <- recommend_players(ot_on, snap)
+r_off <- recommend_players(ot_off, snap)
+if (!identical(attr(r_on, "off_turn"), FALSE))  fail("s6: on-turn recs marked off_turn")
+if (!identical(attr(r_off, "off_turn"), TRUE))  fail("s6: off-turn recs not marked off_turn")
+if (grepl("assumindo seu proximo pick", r_on$reason[1], fixed = TRUE)) {
+  fail("s6: on-turn top reason carries the off-turn annotation")
+}
+if (!grepl("assumindo seu proximo pick", r_off$reason[1], fixed = TRUE)) {
+  fail("s6: off-turn top reason not annotated: ", r_off$reason[1])
+}
+## A finished draft is over, not "off turn" -- empty result, off_turn FALSE.
+ot_done <- ot_on
+ot_done$picks <- data.frame(
+  overall = 1:180, player_id = snap$players$player_id[1:180],
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:180,
+  stringsAsFactors = FALSE)
+r_done <- recommend_players(ot_done, snap)
+if (nrow(r_done) != 0L)                          fail("s6: finished draft returned recs")
+if (!identical(attr(r_done, "off_turn"), FALSE)) fail("s6: finished draft marked off_turn")
+
 cat("story 6 offline checks OK -- p_next + expected_best_next + wait_cost + four-term score\n")
 
 ## --- story 7: mock simulator and calibration (offline) -------------------
@@ -1209,25 +1363,25 @@ cat("story 6 offline checks OK -- p_next + expected_best_next + wait_cost + four
 
 ## (7a) opponent_pick(): the returned player_id is always a row of `available`
 ## (never a re-draft, since `available` excludes drafted players by construction).
-s7_root <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+s7_root <- new_draft(snap, team_order, "Team 01", league = league)
 s7_view <- derive_draft_view(s7_root, snap)
 s7_mv   <- .warroom_market_value(snap$players, seed = 1L)
 if (is.null(names(s7_mv)) || length(s7_mv) != nrow(snap$players)) {
   fail("s7: .warroom_market_value did not return a fully named vector")
 }
-op1 <- opponent_pick(s7_view$available, s7_view$rosters[["Team 02"]], cfg$league, s7_mv)
+op1 <- opponent_pick(s7_view$available, s7_view$rosters[["Team 02"]], league, s7_mv)
 if (!(op1 %in% s7_view$available$player_id)) {
   fail("s7: opponent_pick returned a player not in `available`")
 }
-expect_error(opponent_pick(s7_view$available[0, , drop = FALSE], NULL, cfg$league, s7_mv),
+expect_error(opponent_pick(s7_view$available[0, , drop = FALSE], NULL, league, s7_mv),
             "opponent_pick: no eligible candidate")
 
-## (7b) Full simulated draft, "warroom" strategy: 168 picks, no duplicate,
-## every one of the 12 rosters valid (14 players, no mandatory slot empty).
+## (7b) Full simulated draft, "warroom" strategy: 180 picks, no duplicate,
+## every one of the 12 rosters valid (15 players, no mandatory slot empty).
 sim_w <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "warroom",
-                        league = cfg$league)
-if (nrow(sim_w$state$picks) != 168L) {
-  fail("s7: warroom sim did not complete 168 picks, got ", nrow(sim_w$state$picks))
+                        league = league)
+if (nrow(sim_w$state$picks) != 180L) {
+  fail("s7: warroom sim did not complete 180 picks, got ", nrow(sim_w$state$picks))
 }
 if (anyDuplicated(sim_w$state$picks$player_id)) fail("s7: warroom sim drafted a duplicate player")
 if (!identical(names(sim_w$rosters_valid), team_order)) fail("s7: rosters_valid not named by team_order")
@@ -1237,22 +1391,22 @@ if (!all(sim_w$rosters_valid)) {
 }
 for (tm in team_order) {
   r <- derive_draft_view(sim_w$state, snap)$rosters[[tm]]
-  if (nrow(r) != 14L) fail("s7: ", tm, " does not have 14 players, got ", nrow(r))
-  if (.warroom_unfilled_mandatory(r, cfg$league)$total != 0L) {
+  if (nrow(r) != 15L) fail("s7: ", tm, " does not have 15 players, got ", nrow(r))
+  if (.warroom_unfilled_mandatory(r, league)$total != 0L) {
     fail("s7: ", tm, " has an unfilled mandatory slot")
   }
 }
 
 ## (7c) Determinism: two identical calls -> identical() state and metrics.
 sim_w2 <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "warroom",
-                         league = cfg$league)
+                         league = league)
 if (!identical(sim_w$state, sim_w2$state))     fail("s7: two simulate_draft() calls produced different state")
 if (!identical(sim_w$metrics, sim_w2$metrics)) fail("s7: two simulate_draft() calls produced different metrics")
 
 ## (7c2) Different seeds must produce different outcomes -- guards against a
 ## regression where .warroom_market_value() silently ignores `seed`.
 sim_w_seed2 <- simulate_draft(snap, team_order, "Team 01", seed = 2L, strategy = "warroom",
-                              league = cfg$league)
+                              league = league)
 if (identical(sim_w$state$picks$player_id, sim_w_seed2$state$picks$player_id)) {
   fail("s7: seed 1 and seed 2 produced identical simulate_draft() outcomes")
 }
@@ -1262,19 +1416,19 @@ if (identical(sim_w$state$picks$player_id, sim_w_seed2$state$picks$player_id)) {
 ## .warroom_value_of()) to the same value lineup_value() reports for that
 ## roster. Guards against the two independent "who starts" selections drifting.
 sim_w_roster      <- derive_draft_view(sim_w$state, snap)$rosters[["Team 01"]]
-sim_w_starter_ids <- .warroom_sim_starter_ids(sim_w_roster, cfg$league)
+sim_w_starter_ids <- .warroom_sim_starter_ids(sim_w_roster, league)
 sim_w_starter_val <- sum(.warroom_value_of(sim_w_roster)[sim_w_roster$player_id %in% sim_w_starter_ids])
-sim_w_lineup_val  <- lineup_value(sim_w_roster, cfg$league)
+sim_w_lineup_val  <- lineup_value(sim_w_roster, league)
 if (abs(sim_w_starter_val - sim_w_lineup_val) > 1e-6) {
   fail("s7: .warroom_sim_starter_ids() value sum (", sim_w_starter_val,
        ") does not match lineup_value() (", sim_w_lineup_val, ")")
 }
 
-## (7d) adp / vor strategies also complete 168 picks with valid rosters.
-sim_a <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "adp", league = cfg$league)
-sim_v <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "vor", league = cfg$league)
-if (nrow(sim_a$state$picks) != 168L) fail("s7: adp sim did not complete 168 picks")
-if (nrow(sim_v$state$picks) != 168L) fail("s7: vor sim did not complete 168 picks")
+## (7d) adp / vor strategies also complete 180 picks with valid rosters.
+sim_a <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "adp", league = league)
+sim_v <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "vor", league = league)
+if (nrow(sim_a$state$picks) != 180L) fail("s7: adp sim did not complete 180 picks")
+if (nrow(sim_v$state$picks) != 180L) fail("s7: vor sim did not complete 180 picks")
 if (anyDuplicated(sim_a$state$picks$player_id)) fail("s7: adp sim drafted a duplicate player")
 if (anyDuplicated(sim_v$state$picks$player_id)) fail("s7: vor sim drafted a duplicate player")
 if (!all(sim_a$rosters_valid)) fail("s7: adp sim left an invalid roster")
@@ -1284,7 +1438,7 @@ if (!all(sim_v$rosters_valid)) fail("s7: vor sim left an invalid roster")
 set.seed(42L)
 rs_before <- get(".Random.seed", envir = .GlobalEnv)
 invisible(simulate_draft(snap, team_order, "Team 01", seed = 2L, strategy = "adp",
-                         league = cfg$league))
+                         league = league))
 rs_after <- get(".Random.seed", envir = .GlobalEnv)
 if (!identical(rs_before, rs_after)) fail("s7: simulate_draft() leaked RNG state to the caller")
 
@@ -1307,18 +1461,18 @@ if (!all(cmp7_cols %in% names(cmp7))) {
 if (!is.logical(cmp7$all_rosters_valid)) fail("s7: all_rosters_valid not logical")
 if (!all(is.finite(cmp7$starter_vor)))   fail("s7: starter_vor not finite for every strategy")
 
-## (7g) Strand guard: 12-man roster missing only K + DST, 2 picks remaining,
-## round deliberately early (5) -- the K/DST grace-round rule alone would
-## exclude them, but the strand guard must still admit exactly K/DST.
-roster12_ids <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
+## (7g) Strand guard: 13-man roster missing only K + DST, 2 picks remaining in a
+## 15-round draft, round deliberately early (5) -- the K/DST grace-round rule
+## alone would exclude them, but the strand guard must still admit exactly K/DST.
+roster13_ids <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
                   "SYN-TE-001","SYN-RB-003","SYN-RB-004","SYN-RB-005","SYN-WR-003",
-                  "SYN-WR-004","SYN-TE-002")
-roster12_s7 <- snap$players[snap$players$player_id %in% roster12_ids, , drop = FALSE]
-avail_s7    <- snap$players[!(snap$players$player_id %in% roster12_ids), , drop = FALSE]
-elig7 <- .warroom_eligible_sim_candidates(avail_s7, roster12_s7, cfg$league, round_on_clock = 5L)
+                  "SYN-WR-004","SYN-TE-002","SYN-WR-005")
+roster13_s7 <- snap$players[snap$players$player_id %in% roster13_ids, , drop = FALSE]
+avail_s7    <- snap$players[!(snap$players$player_id %in% roster13_ids), , drop = FALSE]
+elig7 <- .warroom_eligible_sim_candidates(avail_s7, roster13_s7, league, round_on_clock = 5L)
 if (nrow(elig7) == 0L)                    fail("s7: strand guard left no eligible K/DST candidate")
 if (!all(elig7$pos %in% c("K", "DST")))   fail("s7: strand guard did not restrict to K/DST")
-op7 <- opponent_pick(avail_s7, roster12_s7, cfg$league,
+op7 <- opponent_pick(avail_s7, roster13_s7, league,
                      .warroom_market_value(snap$players, seed = 1L))
 pl7 <- snap$players$pos[snap$players$player_id == op7]
 if (!(pl7 %in% c("K", "DST"))) fail("s7: opponent_pick ignored the strand guard, picked ", pl7)
@@ -1327,7 +1481,7 @@ if (!(pl7 %in% c("K", "DST"))) fail("s7: opponent_pick ignored the strand guard,
 ## rounds) so 8 RBs is not yet mandatory-tight; RB (at its cap) must be
 ## excluded while WR (under its cap) and K/DST (round too early, not tight)
 ## behave as expected.
-cap_league <- cfg$league
+cap_league <- league
 cap_league$rounds <- 20L
 roster_cap_ids <- c("SYN-QB-001", "SYN-WR-001", "SYN-WR-002", "SYN-TE-001",
                     sprintf("SYN-RB-%03d", 1:8))
@@ -1499,7 +1653,7 @@ if (!file.exists(s8a_path)) fail("s8: new draft not saved on first load")
 d8a <- load_state(s8a_path)
 if (nrow(d8a$picks) != 0L) fail("s8: fresh state should have 0 picks")
 if (!identical(d8a$user_team, cfg$user_team)) fail("s8: user_team not taken from config.R")
-if (!identical(d8a$team_order, sprintf("Team %02d", seq_len(cfg$league$teams)))) {
+if (!identical(d8a$team_order, sprintf("Team %02d", seq_len(league$teams)))) {
   fail("s8: team_order not the default 'Team NN' sequence")
 }
 
@@ -1507,7 +1661,7 @@ if (!identical(d8a$team_order, sprintf("Team %02d", seq_len(cfg$league$teams))))
 ## derive_draft_view().
 s8b_path <- file.path(tempdir(), "warroom-s8b", "draft.rds")
 unlink(dirname(s8b_path), recursive = TRUE)
-pre <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+pre <- new_draft(snap, team_order, "Team 01", league = league)
 pre <- record_pick(pre, snap$players$player_id[1], snap)
 pre <- record_pick(pre, snap$players$player_id[2], snap)
 save_state(pre, s8b_path)
@@ -1580,7 +1734,7 @@ if (nrow(d8d$picks) != 0L) fail("s8: undo not persisted (state file still has th
 ## identical() player_id order (and full frame).
 s8e_path <- file.path(tempdir(), "warroom-s8e", "draft.rds")
 unlink(dirname(s8e_path), recursive = TRUE)
-mid8 <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+mid8 <- new_draft(snap, team_order, "Team 01", league = league)
 for (i in 1:15) mid8 <- record_pick(mid8, snap$players$player_id[i], snap)
 save_state(mid8, s8e_path)
 term_mid_rec  <- recommend_players(mid8, snap)
@@ -1595,6 +1749,10 @@ shiny::testServer(.s8_bake_server(snap, s8e_path, cfg), {
   }
   if (!identical(recs(), term_mid_rec)) {
     fail("s8: mid-draft server recommendation values differ from the terminal call")
+  }
+  ## mid8 (15 picks) has an opponent on the clock -> the off-turn note renders.
+  if (!grepl("nao esta na vez", output$recs_note, fixed = TRUE)) {
+    fail("s8: off-turn recs_note not rendered when an opponent is on the clock")
   }
 
   ## output$roster_table (verification-gap "Regression gap": roster_slots()'s
@@ -1647,10 +1805,10 @@ shiny::testServer(.s8_bake_server(snap, s8e_path, cfg), {
 ## (8f) Draft complete -> banner shows "DRAFT COMPLETO", recommendations empty.
 s8f_path <- file.path(tempdir(), "warroom-s8f", "draft.rds")
 unlink(dirname(s8f_path), recursive = TRUE)
-full8 <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+full8 <- new_draft(snap, team_order, "Team 01", league = league)
 full8$picks <- data.frame(
-  overall = 1:168, player_id = snap$players$player_id[1:168],
-  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:168,
+  overall = 1:180, player_id = snap$players$player_id[1:180],
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:180,
   stringsAsFactors = FALSE
 )
 save_state(full8, s8f_path)
@@ -1659,6 +1817,18 @@ shiny::testServer(.s8_bake_server(snap, s8f_path, cfg), {
   if (!grepl("DRAFT COMPLETO", b, fixed = TRUE)) fail("s8: completed-draft banner wrong: ", b)
   if (nrow(recs()) != 0L) fail("s8: completed-draft recommendations not empty")
 })
+
+## (8f2) Draft<->snapshot binding at Shiny startup: same check the terminal makes
+## on resume -- a state file bound to a different snapshot created_at is refused.
+s8bind_path <- file.path(tempdir(), "warroom-s8bind", "draft.rds")
+unlink(dirname(s8bind_path), recursive = TRUE)
+snap_future8 <- snap; snap_future8$created_at <- snap$created_at + 3600
+save_state(new_draft(snap_future8, team_order, "Team 01", league = league), s8bind_path)
+msg <- expect_error(
+  shiny::testServer(.s8_bake_server(snap, s8bind_path, cfg), { output$banner }),
+  "s8: Shiny startup against a mismatched snapshot")
+if (!grepl("wrong snapshot", msg)) fail("s8: Shiny binding-mismatch error wording: ", msg)
+unlink(dirname(s8bind_path), recursive = TRUE)
 
 ## (8g) roster_slots(): reuses .warroom_sim_starter_ids() twice (real FLEX,
 ## then FLEX = 0L) to isolate who occupies FLEX; K/DST always land in BENCH,
@@ -1670,7 +1840,7 @@ r8 <- data.frame(
   points    = c(300, 250, 240, 230, 260, 200, 180, 130, 140),
   stringsAsFactors = FALSE
 )
-sl8 <- roster_slots(r8, cfg$league)
+sl8 <- roster_slots(r8, league)
 if (!identical(names(sl8), c("player_id", "slot"))) fail("s8: roster_slots() columns wrong")
 if (!identical(sort(sl8$player_id), sort(r8$player_id))) {
   fail("s8: roster_slots() dropped or added rows")
@@ -1686,8 +1856,8 @@ if (slot_of("t1") != "TE")                          fail("s8: roster_slots(): TE
 if (slot_of("k1") != "BENCH" || slot_of("d1") != "BENCH") {
   fail("s8: roster_slots(): K/DST should be BENCH (lineup_value() never starts them)")
 }
-if (nrow(roster_slots(NULL, cfg$league)) != 0L)      fail("s8: roster_slots(NULL) not 0 rows")
-if (nrow(roster_slots(r8[0, ], cfg$league)) != 0L)   fail("s8: roster_slots(0-row) not 0 rows")
+if (nrow(roster_slots(NULL, league)) != 0L)      fail("s8: roster_slots(NULL) not 0 rows")
+if (nrow(roster_slots(r8[0, ], league)) != 0L)   fail("s8: roster_slots(0-row) not 0 rows")
 
 ## (8h) Static analysis: app.R redefines no core formula/function, names no
 ## RNG symbol, and makes no network / scrape call (Acceptance Criteria).
@@ -1708,6 +1878,31 @@ if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|RCurl::|downlo
 }
 
 cat("story 8 offline checks OK -- app.R server() + roster_slots() + terminal/Shiny equivalence\n")
+
+## --- prepare.R immutability guard (one offline subprocess) -------------------
+## data/projections.rds exists (this test just wrote it), so `Rscript
+## scripts/prepare.R` with no --force must refuse. The guard is placed above the
+## first ffanalytics reference in prepare.R; the fast clean exit here (well under
+## the ~30s an ffanalytics load costs) is the evidence it did not reach a scrape.
+if (file.exists(snapshot_path)) {
+  t_pg <- Sys.time()
+  pg <- suppressWarnings(system2("Rscript", "scripts/prepare.R",
+                                 stdout = TRUE, stderr = TRUE))
+  pg_secs <- as.numeric(difftime(Sys.time(), t_pg, units = "secs"))
+  pg_status <- attr(pg, "status")
+  if (is.null(pg_status) || pg_status == 0L) {
+    fail("prepare guard: `Rscript scripts/prepare.R` did not fail with a snapshot present")
+  }
+  if (!any(grepl("immutable", pg, fixed = TRUE))) {
+    fail("prepare guard: refusal message did not mention immutability: ",
+         paste(utils::tail(pg, 3), collapse = " | "))
+  }
+  if (pg_secs > 25) {
+    fail("prepare guard: refusal took ", round(pg_secs), "s -- it may be ",
+         "reaching a scrape before the guard fires")
+  }
+  cat("prepare.R immutability guard OK\n")
+}
 
 ## --- Summary (I/O matrix: "smoke offline") -------------------------------
 cat(sprintf("smoke OK -- %d players in %s\n", n, snapshot_path))

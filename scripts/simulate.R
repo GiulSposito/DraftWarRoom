@@ -20,8 +20,11 @@ load_core()
 
 cfg      <- .warroom_load_config()
 snapshot <- load_projections(cfg$paths$projections)
+## Same walk-up resolution the simulation core uses via new_draft(league = NULL),
+## so team_order size and the simulated league can never diverge.
+league   <- load_league()
 
-team_order <- sprintf("Team %02d", seq_len(cfg$league$teams))
+team_order <- sprintf("Team %02d", seq_len(league$teams))
 user_team  <- if (!is.null(cfg$user_team) && cfg$user_team %in% team_order) {
   cfg$user_team
 } else {
