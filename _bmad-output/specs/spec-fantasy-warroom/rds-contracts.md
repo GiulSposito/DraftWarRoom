@@ -44,20 +44,20 @@ Keys, at least:
 |---|---|
 | `schema_version` | integer, currently `1` |
 | `projection_created_at` | `created_at` of the snapshot this draft is bound to |
-| `league` | list: `teams` (12), `rounds` (14), `roster` named integer vector, `flex_positions` (`c("RB","WR")`) |
+| `league` | list resolved from `config/league.yml`: `teams` (12), `roster` named integer vector, `flex_positions` (`c("RB","WR")`), and `rounds` — **derived, not stored**, as the sum of every `roster` slot (starters + bench) |
 | `team_order` | character vector of team names in draft-slot order |
 | `user_team` | one entry from `team_order` |
 | `seed` | integer, for reproducible simulation/tie-breaks |
 | `picks` | ordered data frame (see below) |
 
-`roster` named vector for the initial league: `QB=1, RB=2, WR=2, TE=1, FLEX=1, K=1, DST=1, BENCH=6`.
+`roster` named vector for the initial league: `QB=1, RB=2, WR=2, TE=1, FLEX=1, K=1, DST=1, BENCH=6`. Its slots sum to 15, so `rounds` is 15 and the draft is 180 picks (12 × 15).
 
 ### `picks` data frame
 
 Ordered, append-only during a draft. At least:
 
 ```
-overall      integer, 1..168, equals row number
+overall      integer, 1..180, equals row number
 player_id    character, must exist in the snapshot, unique within picks
 entered_at   POSIXct
 ```
@@ -73,7 +73,7 @@ Current pick, team on the clock, per-team rosters, available players, best lineu
 3. A player cannot be drafted twice.
 4. A drafted `player_id` must exist in the projection snapshot.
 5. Undo removes only the most recent pick.
-6. Picks cannot exceed teams × rounds (168).
+6. Picks cannot exceed teams × rounds (180).
 7. Recommendations contain only available players.
 8. Recommendations must not make completing mandatory roster slots impossible.
 9. The same snapshot, configuration, and pick state produce the same recommendation order.

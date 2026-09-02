@@ -8,6 +8,9 @@ Companion to `SPEC.md`. Repository shape, commands, terminal interface, simulato
 fantasy-warroom/
 ├── app.R
 ├── config.R
+├── config/
+│   ├── league.yml          # league format, read on the live path
+│   └── score_settings.yml  # Full-PPR scoring overrides, read only by prepare.R
 ├── Makefile
 ├── renv.lock
 ├── R/
@@ -93,11 +96,13 @@ expand.grid(roster_value = c(0.40, 0.50, 0.60),
 
 `adp_value` completes the sum to 1. Fitness favors starter VOR plus a fraction of bench VOR and ADP surplus, with a large penalty for invalid rosters; prefer configurations that are good across snake slots and low-variance, not just highest mean.
 
+Calibration is meaningful only against a **real** projection snapshot (`make prepare`), whose ADP genuinely diverges from projected value. The synthetic fixture sets `adp` as a near-monotone function of projection rank, so market and value barely disagree and a grid search over it has almost nothing to separate — run calibration on a real snapshot, not the fixture.
+
 ## Verification (`make test`)
 
 At minimum:
 
-- a 12-team, 14-round snake schedule contains 168 picks and reverses correctly;
+- a 12-team, 15-round snake schedule contains 180 picks and reverses correctly, with `rounds` derived as the sum of the `config/league.yml` roster slots;
 - duplicate players are rejected;
 - undo restores the last player to availability;
 - state reload preserves all picks;

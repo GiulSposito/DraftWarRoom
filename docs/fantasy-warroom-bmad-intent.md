@@ -18,14 +18,14 @@ Initial supported configuration:
 
 - 12 fantasy teams.
 - Snake draft.
-- 14 rounds.
+- 15 rounds — one pick per roster slot (9 starters + 6 bench).
 - Starting roster: QB 1, RB 2, WR 2, TE 1, FLEX 1 restricted to RB/WR, K 1, DST 1.
-- Bench: 6.
+- Bench: 6 (any position profile).
 - Full PPR.
 - Draft order is entered immediately before the draft.
 - The user's team and draft slot are configurable.
 
-The implementation may keep these values in `config.R`, but only this initial format needs complete validation in the first epic.
+The league format (team count, roster slots, bench, flex positions) lives in a YAML file, `config/league.yml`, read by the functional core on the live draft path. The number of rounds is not stored — it is derived as the sum of all roster slots (starters + bench), so bench depth and round count can never disagree. Only this initial format needs complete validation in the first epic.
 
 ## Delivery strategy
 
@@ -64,6 +64,9 @@ Use this small structure unless code evidence requires a minor adjustment:
 fantasy-warroom/
 ├── app.R
 ├── config.R
+├── config/
+│   ├── league.yml
+│   └── score_settings.yml
 ├── Makefile
 ├── renv.lock
 ├── R/
@@ -375,7 +378,7 @@ Target live behavior:
 
 At minimum, `make test` must verify:
 
-- a 12-team, 14-round snake schedule contains 168 picks and reverses correctly;
+- a 12-team, 15-round snake schedule contains 180 picks and reverses correctly;
 - duplicate players are rejected;
 - undo restores the last player to availability;
 - state reload preserves all picks;
@@ -421,7 +424,7 @@ The epic is successful when one person can:
 
 1. generate or load a projection snapshot;
 2. configure the 12-team draft order;
-3. conduct all 168 picks in the terminal, stopping and resuming safely;
+3. conduct all 180 picks in the terminal, stopping and resuming safely;
 4. receive fast, deterministic, explainable recommendations on every personal pick;
 5. run seeded mock drafts to compare ADP, VOR, and War Room strategies;
 6. conduct the same draft through a simple Shiny interface that returns the same recommendations as the terminal core.

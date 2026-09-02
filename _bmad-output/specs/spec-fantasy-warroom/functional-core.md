@@ -6,8 +6,9 @@ Companion to `SPEC.md`. The plain functions under `R/` that hold all business ru
 
 | function | responsibility |
 |---|---|
-| `make_snake_schedule()` | generate the 168 turns for 12 teams × 14 rounds, serpentine |
-| `new_draft()` | create the initial `state/draft.rds` list |
+| `make_snake_schedule()` | generate the 180 turns for 12 teams × 15 rounds, serpentine |
+| `new_draft()` | create the initial `state/draft.rds` list; resolves the league from `config/league.yml` when none is passed |
+| league resolver | read `config/league.yml` (teams, roster slots, bench, flex positions) and derive `rounds` = sum of roster slots; the only YAML parsing on the live path |
 | `record_pick()` | validate and append a player to `picks` |
 | `undo_pick()` | remove the most recent pick |
 | `derive_draft_view()` | current pick, team on the clock, rosters, available players, lineup |
@@ -42,7 +43,7 @@ Deterministic: same `state` + `projection_snapshot` + `weights` → same ordered
 3. No player drafted twice.
 4. Drafted `player_id` must exist in the snapshot.
 5. Undo removes only the most recent pick.
-6. Picks cannot exceed 168.
+6. Picks cannot exceed 180 (teams × rounds, rounds = sum of roster slots).
 7. Recommendations contain only available players.
 8. Recommendations never make mandatory roster slots impossible to complete.
 9. Same snapshot + config + pick state → same recommendation order.
