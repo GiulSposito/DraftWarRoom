@@ -89,3 +89,23 @@ Issues surfaced during review but intentionally not fixed in the story that foun
 - source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/6-market-aware-wait-intelligence.md`
   summary: The `adp_sd` fallback in `.warroom_pick_sd()` (`.warroom_adp_sd_frac * adp`, used when the snapshot has `adp` but no `adp_sd` column) has no test — every story-6 test uses the synthetic fixture, which always carries `adp_sd`, or drops `adp`/`adp_sd` together.
   evidence: `normalize_projections()` drops `adp` and `adp_sd` as a pair, so the fallback only fires for a hand-built or partial snapshot. Low risk, but the branch is uncovered; add a targeted assertion when the real preparation pipeline's ADP handling is revisited.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/7-mock-simulator-and-calibration.md`
+  summary: `.warroom_sim_starter_ids()` in `R/simulation.R` mirrors `.warroom_best_lineup()`'s starter selection, but its flex-pool logic diverges from `.warroom_best_lineup()`'s for a hypothetical league that puts `TE` (or `K`/`DST`) in `flex_positions` — `.warroom_best_lineup()`'s flex pool only excludes already-used RB/WR starters (its `start_k` ternary is `0L` for any other position), while `.warroom_sim_starter_ids()` excludes every already-used starter regardless of position, so the two would disagree on who "starts."
+  evidence: The initial league's `flex_positions` is fixed to `c("RB","WR")` in `config.R`, and SPEC.md's Constraints state "only the initial league format is fully validated this epic," so the divergent case is currently unreachable. Revisit if a future league format ever varies `flex_positions`.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/7-mock-simulator-and-calibration.md`
+  summary: `scripts/simulate.R --calibrate` has no automated end-to-end test of its own CLI wiring (exit code, output) — only `calibrate_weights()` itself is unit-tested via `tests/smoke.R`.
+  evidence: Running the full default weight grid (20 rows x default seeds x slots) inside `make test` would violate story 7's explicit "calibration is heavier, run only on explicit request, not part of the reduced dev suite" design. Closing this would need `scripts/simulate.R` to accept a way to shrink the grid/seeds for a fast test run.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/7-mock-simulator-and-calibration.md`
+  summary: `expect_error()` in `tests/smoke.R` (defined in story 1) never asserts the actual error message text — its `label` argument is purely descriptive, used only in the failure path when no error was raised at all — so every `expect_error(...)` call across the suite (including story 7's `opponent_pick()` check) gives false confidence that a *specific* error string is being verified.
+  evidence: This is a repo-wide test-helper limitation from story 1, not something story 7 introduced; surfaced incidentally while reviewing story 7's use of the same helper. Strengthening it (compare `conditionMessage()` against a pattern) would touch every story's tests, so it needs a dedicated pass.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/7-mock-simulator-and-calibration.md`
+  summary: `.warroom_sim_metrics()` in `R/simulation.R` recomputes the pick-to-team-slot mapping (`make_snake_schedule()` + `match()` + `schedule$slot[state$picks$overall]`) instead of reusing the equivalent mapping `derive_draft_view()` already builds internally to construct `rosters` — because that mapping isn't exposed in `derive_draft_view()`'s return value.
+  evidence: Same class of tension as the story-6 deferred item about `.warroom_following_user_pick()` duplicating `next_user_pick()`'s pattern instead of sharing it, since `R/core.R` is frozen this story (`derive_draft_view()` cannot be changed without human approval). Consider exposing the pick-slot mapping from `core.R` to remove both duplications together in a focused pass.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/7-mock-simulator-and-calibration.md`
+  summary: `calibrate_weights()`'s grid x seed x slot loop (`R/simulation.R`) has no per-run failure isolation — a single `simulate_draft()` error on any one run aborts the entire (potentially multi-minute) calibration sweep with no partial results.
+  evidence: Low likelihood given `recommend_players()`'s own feasibility guardrails make a mid-draft failure very unlikely under any valid league/team_order, and per-run isolation was out of scope for this story's spec ("a plain double loop"). Worth hardening if calibration grids/seed counts grow larger in practice.

@@ -1202,6 +1202,256 @@ if (any(grepl("shiny|http[s]?://|readRDS|saveRDS|scrape", s6_src))) {
 
 cat("story 6 offline checks OK -- p_next + expected_best_next + wait_cost + four-term score\n")
 
+## --- story 7: mock simulator and calibration (offline) -------------------
+## opponent_pick / simulate_draft / compare_strategies / calibrate_weights.
+## Reuses snap, team_order, cfg, fail, expect_error from the earlier scope.
+## No network; deterministic seeds only. Covers the story-7 I/O matrix.
+
+## (7a) opponent_pick(): the returned player_id is always a row of `available`
+## (never a re-draft, since `available` excludes drafted players by construction).
+s7_root <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+s7_view <- derive_draft_view(s7_root, snap)
+s7_mv   <- .warroom_market_value(snap$players, seed = 1L)
+if (is.null(names(s7_mv)) || length(s7_mv) != nrow(snap$players)) {
+  fail("s7: .warroom_market_value did not return a fully named vector")
+}
+op1 <- opponent_pick(s7_view$available, s7_view$rosters[["Team 02"]], cfg$league, s7_mv)
+if (!(op1 %in% s7_view$available$player_id)) {
+  fail("s7: opponent_pick returned a player not in `available`")
+}
+expect_error(opponent_pick(s7_view$available[0, , drop = FALSE], NULL, cfg$league, s7_mv),
+            "opponent_pick: no eligible candidate")
+
+## (7b) Full simulated draft, "warroom" strategy: 168 picks, no duplicate,
+## every one of the 12 rosters valid (14 players, no mandatory slot empty).
+sim_w <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "warroom",
+                        league = cfg$league)
+if (nrow(sim_w$state$picks) != 168L) {
+  fail("s7: warroom sim did not complete 168 picks, got ", nrow(sim_w$state$picks))
+}
+if (anyDuplicated(sim_w$state$picks$player_id)) fail("s7: warroom sim drafted a duplicate player")
+if (!identical(names(sim_w$rosters_valid), team_order)) fail("s7: rosters_valid not named by team_order")
+if (!all(sim_w$rosters_valid)) {
+  fail("s7: warroom sim left invalid roster(s): ",
+       paste(names(sim_w$rosters_valid)[!sim_w$rosters_valid], collapse = ", "))
+}
+for (tm in team_order) {
+  r <- derive_draft_view(sim_w$state, snap)$rosters[[tm]]
+  if (nrow(r) != 14L) fail("s7: ", tm, " does not have 14 players, got ", nrow(r))
+  if (.warroom_unfilled_mandatory(r, cfg$league)$total != 0L) {
+    fail("s7: ", tm, " has an unfilled mandatory slot")
+  }
+}
+
+## (7c) Determinism: two identical calls -> identical() state and metrics.
+sim_w2 <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "warroom",
+                         league = cfg$league)
+if (!identical(sim_w$state, sim_w2$state))     fail("s7: two simulate_draft() calls produced different state")
+if (!identical(sim_w$metrics, sim_w2$metrics)) fail("s7: two simulate_draft() calls produced different metrics")
+
+## (7c2) Different seeds must produce different outcomes -- guards against a
+## regression where .warroom_market_value() silently ignores `seed`.
+sim_w_seed2 <- simulate_draft(snap, team_order, "Team 01", seed = 2L, strategy = "warroom",
+                              league = cfg$league)
+if (identical(sim_w$state$picks$player_id, sim_w_seed2$state$picks$player_id)) {
+  fail("s7: seed 1 and seed 2 produced identical simulate_draft() outcomes")
+}
+
+## (7c3) .warroom_sim_starter_ids() cross-check: the starter set it picks for
+## sim_w's user roster must sum (vor if present else points, matching
+## .warroom_value_of()) to the same value lineup_value() reports for that
+## roster. Guards against the two independent "who starts" selections drifting.
+sim_w_roster      <- derive_draft_view(sim_w$state, snap)$rosters[["Team 01"]]
+sim_w_starter_ids <- .warroom_sim_starter_ids(sim_w_roster, cfg$league)
+sim_w_starter_val <- sum(.warroom_value_of(sim_w_roster)[sim_w_roster$player_id %in% sim_w_starter_ids])
+sim_w_lineup_val  <- lineup_value(sim_w_roster, cfg$league)
+if (abs(sim_w_starter_val - sim_w_lineup_val) > 1e-6) {
+  fail("s7: .warroom_sim_starter_ids() value sum (", sim_w_starter_val,
+       ") does not match lineup_value() (", sim_w_lineup_val, ")")
+}
+
+## (7d) adp / vor strategies also complete 168 picks with valid rosters.
+sim_a <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "adp", league = cfg$league)
+sim_v <- simulate_draft(snap, team_order, "Team 01", seed = 1L, strategy = "vor", league = cfg$league)
+if (nrow(sim_a$state$picks) != 168L) fail("s7: adp sim did not complete 168 picks")
+if (nrow(sim_v$state$picks) != 168L) fail("s7: vor sim did not complete 168 picks")
+if (anyDuplicated(sim_a$state$picks$player_id)) fail("s7: adp sim drafted a duplicate player")
+if (anyDuplicated(sim_v$state$picks$player_id)) fail("s7: vor sim drafted a duplicate player")
+if (!all(sim_a$rosters_valid)) fail("s7: adp sim left an invalid roster")
+if (!all(sim_v$rosters_valid)) fail("s7: vor sim left an invalid roster")
+
+## (7e) RNG isolation: simulate_draft() never leaks .Random.seed to the caller.
+set.seed(42L)
+rs_before <- get(".Random.seed", envir = .GlobalEnv)
+invisible(simulate_draft(snap, team_order, "Team 01", seed = 2L, strategy = "adp",
+                         league = cfg$league))
+rs_after <- get(".Random.seed", envir = .GlobalEnv)
+if (!identical(rs_before, rs_after)) fail("s7: simulate_draft() leaked RNG state to the caller")
+
+## (7f) Three-strategy comparison, same seed (same market draw -- fair
+## comparison): 3 rows, every documented metric column, all_rosters_valid logical.
+cmp7 <- compare_strategies(snap, team_order, "Team 01", seed = 1L,
+                           weights = default_decision_weights())
+if (nrow(cmp7) != 3L) fail("s7: compare_strategies did not return 3 rows, got ", nrow(cmp7))
+if (!setequal(cmp7$strategy, c("adp", "vor", "warroom"))) {
+  fail("s7: compare_strategies strategy column wrong: ", paste(cmp7$strategy, collapse = ", "))
+}
+cmp7_cols <- c("strategy", "starter_points", "starter_vor", "bench_vor",
+              "n_QB", "n_RB", "n_WR", "n_TE", "n_K", "n_DST",
+              "adp_surplus", "reach_count", "roster_valid", "qb_round", "te_round",
+              "all_rosters_valid")
+if (!all(cmp7_cols %in% names(cmp7))) {
+  fail("s7: compare_strategies missing column(s): ",
+       paste(setdiff(cmp7_cols, names(cmp7)), collapse = ", "))
+}
+if (!is.logical(cmp7$all_rosters_valid)) fail("s7: all_rosters_valid not logical")
+if (!all(is.finite(cmp7$starter_vor)))   fail("s7: starter_vor not finite for every strategy")
+
+## (7g) Strand guard: 12-man roster missing only K + DST, 2 picks remaining,
+## round deliberately early (5) -- the K/DST grace-round rule alone would
+## exclude them, but the strand guard must still admit exactly K/DST.
+roster12_ids <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
+                  "SYN-TE-001","SYN-RB-003","SYN-RB-004","SYN-RB-005","SYN-WR-003",
+                  "SYN-WR-004","SYN-TE-002")
+roster12_s7 <- snap$players[snap$players$player_id %in% roster12_ids, , drop = FALSE]
+avail_s7    <- snap$players[!(snap$players$player_id %in% roster12_ids), , drop = FALSE]
+elig7 <- .warroom_eligible_sim_candidates(avail_s7, roster12_s7, cfg$league, round_on_clock = 5L)
+if (nrow(elig7) == 0L)                    fail("s7: strand guard left no eligible K/DST candidate")
+if (!all(elig7$pos %in% c("K", "DST")))   fail("s7: strand guard did not restrict to K/DST")
+op7 <- opponent_pick(avail_s7, roster12_s7, cfg$league,
+                     .warroom_market_value(snap$players, seed = 1L))
+pl7 <- snap$players$pos[snap$players$player_id == op7]
+if (!(pl7 %in% c("K", "DST"))) fail("s7: opponent_pick ignored the strand guard, picked ", pl7)
+
+## Positional cap, isolated from the strand guard: a bigger league (more
+## rounds) so 8 RBs is not yet mandatory-tight; RB (at its cap) must be
+## excluded while WR (under its cap) and K/DST (round too early, not tight)
+## behave as expected.
+cap_league <- cfg$league
+cap_league$rounds <- 20L
+roster_cap_ids <- c("SYN-QB-001", "SYN-WR-001", "SYN-WR-002", "SYN-TE-001",
+                    sprintf("SYN-RB-%03d", 1:8))
+roster_cap <- snap$players[snap$players$player_id %in% roster_cap_ids, , drop = FALSE]
+avail_cap  <- snap$players[!(snap$players$player_id %in% roster_cap_ids), , drop = FALSE]
+elig_cap   <- .warroom_eligible_sim_candidates(avail_cap, roster_cap, cap_league,
+                                               round_on_clock = 9L)
+if (any(elig_cap$pos == "RB"))            fail("s7: positional cap did not exclude RB at its cap")
+if (!any(elig_cap$pos == "WR"))           fail("s7: positional cap wrongly excluded WR under its cap")
+if (any(elig_cap$pos %in% c("K", "DST"))) fail("s7: K/DST offered before the grace rounds without a strand")
+
+## (7h) default_weight_grid(): every row sums to 1, no negative adp_value.
+wg7 <- default_weight_grid()
+if (nrow(wg7) == 0L) fail("s7: default_weight_grid produced no rows")
+if (!all(c("roster_value","wait_cost","tier_cliff","adp_value") %in% names(wg7))) {
+  fail("s7: default_weight_grid missing weight column(s)")
+}
+if (any(wg7$adp_value < 0)) fail("s7: default_weight_grid kept a negative-adp_value row")
+wg7_sums <- wg7$roster_value + wg7$wait_cost + wg7$tier_cliff + wg7$adp_value
+if (any(abs(wg7_sums - 1) > 1e-9)) fail("s7: default_weight_grid rows do not sum to 1")
+
+## Exact hypothesis breakpoints (operations.md "Calibration") -- catches an
+## accidental transposition of the grid's ranges.
+if (!isTRUE(all.equal(sort(unique(wg7$roster_value)), c(0.40, 0.50, 0.60)))) {
+  fail("s7: default_weight_grid roster_value breakpoints wrong: ",
+       paste(sort(unique(wg7$roster_value)), collapse = ", "))
+}
+if (!isTRUE(all.equal(sort(unique(wg7$wait_cost)), c(0.20, 0.30, 0.40)))) {
+  fail("s7: default_weight_grid wait_cost breakpoints wrong: ",
+       paste(sort(unique(wg7$wait_cost)), collapse = ", "))
+}
+if (!isTRUE(all.equal(sort(unique(wg7$tier_cliff)), c(0.10, 0.15, 0.20)))) {
+  fail("s7: default_weight_grid tier_cliff breakpoints wrong: ",
+       paste(sort(unique(wg7$tier_cliff)), collapse = ", "))
+}
+
+## (7i) Calibration, minimal grid (2 rows, 1 seed, 1 slot): 2 rows, finite
+## mean_fitness/risk_score, ordered by risk_score descending.
+grid7 <- wg7[1:2, , drop = FALSE]
+cal7  <- calibrate_weights(snap, team_order, seeds = 1L, slots = 1L, grid = grid7)
+if (nrow(cal7) != 2L) fail("s7: calibrate_weights did not return 2 rows, got ", nrow(cal7))
+if (!all(c("mean_fitness","sd_fitness","risk_score","all_valid") %in% names(cal7))) {
+  fail("s7: calibrate_weights missing aggregate column(s)")
+}
+if (!all(is.finite(cal7$mean_fitness)) || !all(is.finite(cal7$risk_score))) {
+  fail("s7: calibrate_weights produced non-finite mean_fitness/risk_score")
+}
+if (is.unsorted(rev(cal7$risk_score)))  fail("s7: calibrate_weights not ordered by risk_score descending")
+if (!all(cal7$sd_fitness == 0))         fail("s7: single-run sd_fitness should be 0")
+
+## (7i2) Multi-run aggregation across seeds x slots (2 grid rows, seeds = c(1,2),
+## slots = c(1,6) -> 4 runs per row). The only other calibrate_weights() test
+## above forces seeds = 1L, slots = 1L, so `fits` always has length 1 and the
+## `fits <- c(fits, fit)` accumulation across the nested slot/seed loop is never
+## actually exercised there. This guards a regression like `fits <- fit`
+## (dropping accumulation) or an off-by-one in `team_order[[slot]]`.
+cal7b <- calibrate_weights(snap, team_order, seeds = c(1L, 2L), slots = c(1L, 6L), grid = grid7)
+if (nrow(cal7b) != 2L) fail("s7: calibrate_weights (multi-run) did not return 2 rows, got ", nrow(cal7b))
+if (!all(is.finite(cal7b$sd_fitness)) || any(cal7b$sd_fitness < 0)) {
+  fail("s7: calibrate_weights (multi-run) sd_fitness not finite / non-negative")
+}
+if (!all(is.finite(cal7b$mean_fitness))) fail("s7: calibrate_weights (multi-run) mean_fitness not finite")
+
+## Independently recompute grid row 1's fitness across its 4 (slot, seed)
+## combinations via direct simulate_draft() calls, and cross-check the manually
+## computed mean against calibrate_weights()'s own mean_fitness for that row
+## (rows are reordered by risk_score, so match on the weight columns).
+manual_weights <- c(
+  roster_value = grid7$roster_value[1],
+  wait_cost    = grid7$wait_cost[1],
+  tier_cliff   = grid7$tier_cliff[1],
+  adp_value    = grid7$adp_value[1]
+)
+manual_fits <- numeric(0)
+for (slot in c(1L, 6L)) {
+  for (sd in c(1L, 2L)) {
+    res_m <- simulate_draft(snap, team_order, team_order[[slot]], seed = sd,
+                            strategy = "warroom", weights = manual_weights)
+    m <- res_m$metrics
+    fit_m <- m$starter_vor +
+      .warroom_calib_bench_frac * m$bench_vor +
+      .warroom_calib_adp_frac   * m$adp_surplus -
+      .warroom_calib_invalid_penalty * (!isTRUE(m$roster_valid))
+    manual_fits <- c(manual_fits, fit_m)
+  }
+}
+row1_idx <- which(abs(cal7b$roster_value - grid7$roster_value[1]) < 1e-9 &
+                  abs(cal7b$wait_cost   - grid7$wait_cost[1])   < 1e-9 &
+                  abs(cal7b$tier_cliff  - grid7$tier_cliff[1])  < 1e-9)
+if (length(row1_idx) != 1L) fail("s7: could not locate grid row 1 in calibrate_weights() (multi-run) output")
+if (abs(mean(manual_fits) - cal7b$mean_fitness[row1_idx]) > 1e-6) {
+  fail("s7: manually recomputed mean_fitness (", mean(manual_fits),
+       ") does not match calibrate_weights() mean_fitness (",
+       cal7b$mean_fitness[row1_idx], ") for grid row 1")
+}
+
+## (7j) make simulate: scripts/simulate.R's default (reduced) path exits 0
+## and prints the three strategies.
+sim_script_out <- tryCatch(
+  system2("Rscript", c("scripts/simulate.R"), stdout = TRUE, stderr = TRUE),
+  error = function(e) fail("s7: could not run scripts/simulate.R: ", conditionMessage(e))
+)
+sim_script_status <- attr(sim_script_out, "status")
+if (!is.null(sim_script_status) && sim_script_status != 0L) {
+  fail("s7: scripts/simulate.R (default) exited ", sim_script_status, ": ",
+       paste(utils::tail(sim_script_out, 20L), collapse = "\n"))
+}
+if (!any(grepl("warroom", sim_script_out, fixed = TRUE))) {
+  fail("s7: scripts/simulate.R output does not mention the warroom strategy")
+}
+
+## (7k) No RNG / genetic-algorithm markers outside simulation.R: recommend_players()
+## and simulate.R stay purely analytic / grid-search (SPEC "Non-goals", AGENTS.md).
+s7_rec_src <- readLines(.warroom_find_file("R/recommendation.R"), warn = FALSE)
+if (any(grepl("monte|rnorm|runif|\\bsample\\(|genetic|\\bGA\\b", s7_rec_src))) {
+  fail("s7: recommendation.R names an RNG / genetic-algorithm symbol")
+}
+s7_sim_src <- readLines(.warroom_find_file("R/simulation.R"), warn = FALSE)
+if (any(grepl("genetic|evolution|GA\\(", s7_sim_src))) {
+  fail("s7: simulation.R names a genetic/evolutionary optimizer symbol")
+}
+
+cat("story 7 offline checks OK -- opponent_pick + simulate_draft + compare_strategies + calibrate_weights\n")
+
 ## --- Summary (I/O matrix: "smoke offline") -------------------------------
 cat(sprintf("smoke OK -- %d players in %s\n", n, snapshot_path))
 for (p in names(pos_tab)) cat(sprintf("  %-3s %3d\n", p, pos_tab[[p]]))
