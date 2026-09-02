@@ -761,7 +761,7 @@ o1b <- s4_run(c(
   "xyzzy",               # pick 6 -- no match
   "RB Synthetic 01",     # pick 6 -- already drafted -> resolves to none
   "/board", "/board rb", "/board xx",   # board, filtered, invalid pos
-  "/team", "/teams", "/status", "/rec", # views + degraded rec
+  "/team", "/teams", "/status", "/rec", # views + real recommendations
   "WR Synthetic 01",     # pick 6 Team 06 -- exact
   "/undo",               # undo pick 6
   "WR Synthetic 02",     # pick 6 Team 06 again
@@ -779,7 +779,7 @@ if (!has(o1b, "melhores disponiveis:"))              fail("s4: /board missing")
 if (!has(o1b, "melhores disponiveis (RB)"))          fail("s4: /board rb missing")
 if (!has(o1b, "unknown position 'XX'"))              fail("s4: /board xx not validated")
 if (!has(o1b, "R01  overall"))                       fail("s4: /status banner missing")
-if (!has(o1b, "recomendacoes chegam na story 5"))    fail("s4: degraded /rec missing")
+if (!has(o1b, "recomendacoes (top"))                 fail("s4: /rec output missing")
 if (!has(o1b, "desfeito o ultimo pick"))             fail("s4: /undo not confirmed")
 if (!has(o1b, "salvo em"))                           fail("s4: /save not confirmed")
 if (!has(o1b, "Team 01:"))                           fail("s4: /team header missing")
@@ -820,7 +820,7 @@ s4d_path <- file.path(tempdir(), "warroom-s4d", "draft.rds")
 unlink(dirname(s4d_path), recursive = TRUE)
 invisible(s4_run(team_line_only <- c(team_line, "/quit"), state_path = s4d_path))
 o1d <- s4_run(c("QB Synthetic 03"), state_path = s4d_path)  # resume; user (Team 01) on the clock, no /rec
-rec_at    <- which(grepl("recomendacoes chegam na story 5", o1d, fixed = TRUE))
+rec_at    <- which(grepl("recomendacoes (top", o1d, fixed = TRUE))
 prompt_at <- which(grepl("pick 1 > ", o1d, fixed = TRUE))
 if (!length(rec_at))                       fail("s4: no auto-recommendation on the user's turn")
 if (length(prompt_at) && rec_at[1] > prompt_at[1]) fail("s4: recommendation printed after the pick prompt")
@@ -887,6 +887,178 @@ if (resolve_player("z", blank, blank)$status != "none") fail("s4: short query ma
 unlink(s4_dir, recursive = TRUE)
 unlink(file.path(tempdir(), "warroom-s4-bad"), recursive = TRUE)
 cat("story 4 offline checks OK -- terminal loop + name resolution + rehearsal\n")
+
+## --- story 5: roster-aware recommendation foundation (offline) ----------
+## Hand-built pick states (picks$overall == row, unique ids) drive
+## recommend_players(); the snake schedule maps slot-1 picks to the user
+## (Team 01), so the user roster is exactly the ids placed at those overalls.
+## tempdir() only, no network.
+
+## default weights: four names, sum to 1.
+w5 <- default_decision_weights()
+if (!identical(sort(names(w5)), sort(c("roster_value","wait_cost","tier_cliff","adp_value")))) {
+  fail("s5: default_decision_weights names wrong")
+}
+if (abs(sum(w5) - 1) > 1e-9) fail("s5: default weights do not sum to 1")
+
+## lineup_value: known roster -> known best lineup.
+rl5 <- data.frame(pos    = c("QB","RB","RB","RB","WR","WR","TE"),
+                  points = c(380, 250, 210, 190, 300, 240, 180),
+                  stringsAsFactors = FALSE)
+lv5 <- lineup_value(rl5, cfg$league)   # points fallback: 380 + 460 + 540 + 180 + FLEX(190)
+if (abs(lv5 - 1750) > 1e-6)           fail("s5: lineup_value (points fallback) != 1750, got ", lv5)
+if (lineup_value(rl5[0, ], cfg$league) != 0) fail("s5: empty roster lineup_value != 0")
+## vor is the value currency when present -- a huge `points` must not override it.
+if (lineup_value(data.frame(pos = "RB", vor = 100, points = 9999), cfg$league) != 100) {
+  fail("s5: lineup_value did not prefer vor over points")
+}
+
+## Snake slot-1 overalls -> the user's pick numbers.
+s5_sched  <- make_snake_schedule(12L, 14L)
+s5_slot1  <- s5_sched$overall[s5_sched$slot == 1L]
+s5_worst  <- function(exclude_pos = character(0)) {
+  p <- snap$players[order(snap$players$points, snap$players$player_id), ]
+  p$player_id[!(p$pos %in% exclude_pos)]
+}
+## Build the full ordered id vector: user_ids at slot-1 overalls, `pool` fills
+## every other overall up to the user's last pick.
+s5_ids <- function(user_ids, pool) {
+  n_total <- if (length(user_ids)) s5_slot1[length(user_ids)] else 0L
+  ids     <- character(n_total)
+  at      <- s5_slot1[seq_along(user_ids)]
+  ids[at] <- user_ids
+  gaps    <- setdiff(seq_len(n_total), at)
+  pool    <- setdiff(pool, user_ids)
+  if (length(gaps) > length(pool)) fail("s5: filler pool too small")
+  ids[gaps] <- pool[seq_along(gaps)]
+  ids
+}
+s5_state <- function(user_ids, pool = s5_worst()) {
+  st <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+  ids <- s5_ids(user_ids, pool)
+  if (length(ids)) {
+    st$picks <- data.frame(
+      overall    = seq_along(ids),
+      player_id  = as.character(ids),
+      entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + seq_along(ids),
+      stringsAsFactors = FALSE
+    )
+  }
+  st
+}
+valid_labels <- c("TAKE NOW","ROSTER NEED","TIER CLIFF","BEST VALUE","CAN WAIT")
+
+## (a) Empty roster, user on the clock.
+st0 <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+r0  <- recommend_players(st0, snap)
+if (!identical(names(r0), .warroom_rec_columns)) fail("s5: result columns/order wrong")
+if (nrow(r0) != 10L)                        fail("s5: expected 10 recommendations, got ", nrow(r0))
+if (any(r0$pos %in% c("K","DST")))          fail("s5: K/DST recommended in round 1")
+if (!all(r0$label %in% valid_labels))       fail("s5: unknown label: ", paste(setdiff(r0$label, valid_labels), collapse = ", "))
+if (!all(is.na(r0$p_next)) || !all(is.na(r0$wait_cost))) fail("s5: p_next / wait_cost not NA")
+if (!(r0$pos[1] %in% c("RB","WR")))         fail("s5: top pick not RB/WR on an empty roster")
+if (any(r0$player_id %in% st0$picks$player_id)) fail("s5: drafted player recommended")
+
+## (b) Determinism.
+if (!identical(r0, recommend_players(st0, snap))) fail("s5: two calls not identical")
+
+## (c) QB2 penalty: user holds 1 QB, all other starters open. A penalized second
+## QB drops out of the top 10 entirely; widen n to inspect the reason string.
+stq    <- s5_state(c("SYN-QB-001"))
+rq_top <- recommend_players(stq, snap)
+rq_all <- recommend_players(stq, snap, n = 400L)
+qbr    <- rq_all[rq_all$pos == "QB", ]
+if (nrow(qbr) == 0L)                         fail("s5: no QB candidate to check QB2")
+if (!any(grepl("QB2", qbr$reason)))          fail("s5: QB2 penalty not explained")
+if (any(rq_top$pos == "QB"))                 fail("s5: penalized QB2 still in top 10")
+
+## (d) TE2 penalty (smaller than QB2): user holds 1 TE, other starters open.
+stt <- s5_state(c("SYN-TE-001"))
+ter <- recommend_players(stt, snap, n = 400L)
+ter <- ter[ter$pos == "TE", ]
+if (nrow(ter) == 0L || !any(grepl("TE2", ter$reason))) fail("s5: TE2 penalty not explained")
+
+## (e) K/DST excluded well before the final rounds (mid draft, no squeeze).
+rm5 <- recommend_players(s5_state(c("SYN-WR-001","SYN-RB-001","SYN-WR-002")), snap)
+if (any(rm5$pos %in% c("K","DST")))          fail("s5: K/DST recommended mid draft")
+
+## (f) K/DST forced + strand guard: 12-man roster, 2 picks left, only K & DST needed.
+roster12 <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
+              "SYN-TE-001","SYN-RB-003","SYN-RB-004","SYN-RB-005","SYN-WR-003",
+              "SYN-WR-004","SYN-TE-002")
+rf5 <- recommend_players(s5_state(roster12, pool = s5_worst(c("K","DST"))), snap)
+if (nrow(rf5) == 0L)                         fail("s5: no recommendations when K/DST forced")
+if (!all(rf5$pos %in% c("K","DST")))         fail("s5: non-mandatory (bench) candidate not stranded out")
+if (!any(rf5$label %in% c("ROSTER NEED","TAKE NOW"))) fail("s5: forced K/DST not labelled a roster need")
+
+## (g) Tier cliff: user has RB/WR/FLEX filled; opponents take RB 04-05, leaving
+## only RB 06 in tier 1.
+cliff_pool <- c("SYN-RB-004","SYN-RB-005", s5_worst(c("K","DST")))
+rc5 <- recommend_players(
+  s5_state(c("SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002","SYN-RB-003"),
+           pool = cliff_pool), snap, n = 40L)
+rb6 <- rc5[rc5$player_id == "SYN-RB-006", ]
+if (nrow(rb6) != 1L)                          fail("s5: last-in-tier RB not in the ranking")
+if (rb6$label != "TIER CLIFF" && !grepl("tier", rb6$reason)) {
+  fail("s5: last-in-tier RB neither labelled TIER CLIFF nor explained by tier")
+}
+if (!("TIER CLIFF" %in% rc5$label))          fail("s5: no TIER CLIFF label in a thin-tier scenario")
+
+## (h) BEST VALUE: deep into the draft, top players fell well past ADP.
+deep_user <- c("SYN-QB-001","SYN-WR-001","SYN-RB-001")
+rbv <- recommend_players(s5_state(deep_user, pool = s5_worst()), snap)
+if (!("BEST VALUE" %in% rbv$label))          fail("s5: no BEST VALUE label deep in the draft")
+if (any(rbv$adp_value[rbv$label == "BEST VALUE"] < 8)) fail("s5: BEST VALUE with adp_value < 8")
+
+## (i) Draft complete -> zero-row frame with the full column set.
+full5 <- s5_state(NULL)
+full5$picks <- data.frame(
+  overall    = 1:168,
+  player_id  = snap$players$player_id[1:168],
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:168,
+  stringsAsFactors = FALSE
+)
+rcomp <- recommend_players(full5, snap)
+if (nrow(rcomp) != 0L)                       fail("s5: completed draft returned rows")
+if (!identical(names(rcomp), .warroom_rec_columns)) fail("s5: empty result columns wrong")
+if (!identical(vapply(rcomp, class, ""), vapply(r0, class, ""))) {
+  fail("s5: empty result column types differ from a populated result")
+}
+
+## (j) Snapshot without an adp column -> adp NA, adp_value 0, no crash.
+snap_noadp <- snap
+snap_noadp$players$adp    <- NULL
+snap_noadp$players$adp_sd <- NULL
+rna <- recommend_players(st0, snap_noadp)
+if (nrow(rna) == 0L)                         fail("s5: no recs without adp column")
+if (!all(is.na(rna$adp)) || !all(rna$adp_value == 0)) fail("s5: adp fallback wrong")
+
+## (k) n caps the result; n larger than the eligible set returns fewer rows.
+r3 <- recommend_players(st0, snap, n = 3L)
+if (nrow(r3) != 3L)                          fail("s5: n = 3 did not cap the result")
+## 13-man roster needing only DST, 1 pick left, and 22 of 24 DSTs already gone:
+## the strand + squeeze filters leave exactly 2 eligible players.
+roster13 <- c("SYN-QB-001","SYN-RB-001","SYN-RB-002","SYN-WR-001","SYN-WR-002",
+              "SYN-TE-001","SYN-RB-003","SYN-K-001","SYN-RB-004","SYN-RB-005",
+              "SYN-WR-003","SYN-WR-004","SYN-TE-002")
+dst_gone  <- sprintf("SYN-DST-%03d", 1:22)
+r_few <- recommend_players(
+  s5_state(roster13, pool = c(dst_gone, s5_worst(c("K","DST")))), snap, n = 10L)
+if (nrow(r_few) != 2L)                       fail("s5: n > eligible not honored, got ", nrow(r_few))
+if (!all(r_few$pos == "DST"))                fail("s5: squeeze left a non-DST candidate")
+
+## (l) /rec in the terminal renders the real table (label + score).
+s5t_path <- file.path(tempdir(), "warroom-s5t", "draft.rds")
+unlink(dirname(s5t_path), recursive = TRUE)
+o5t <- s4_run(c(team_line, "/rec", "/quit"), state_path = s5t_path)
+if (!has(o5t, "recomendacoes (top"))         fail("s5: /rec header missing")
+if (!any(grepl("score", o5t, fixed = TRUE))) fail("s5: /rec output has no score column")
+if (!any(vapply(valid_labels, function(l) any(grepl(l, o5t, fixed = TRUE)), logical(1)))) {
+  fail("s5: /rec output shows no label")
+}
+unlink(dirname(s5t_path), recursive = TRUE)
+
+cat("story 5 offline checks OK -- lineup value + marginal roster value + guardrails + labels\n")
 
 ## --- Summary (I/O matrix: "smoke offline") -------------------------------
 cat(sprintf("smoke OK -- %d players in %s\n", n, snapshot_path))

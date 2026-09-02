@@ -84,23 +84,30 @@ load_core()
 }
 
 .warroom_show_recommendations <- function(state, snapshot, view, say) {
-  if (exists("recommend_players", mode = "function")) {
-    recs <- tryCatch(recommend_players(state, snapshot),
-                     error = function(e) { say("  recommend_players(): ", conditionMessage(e)); NULL })
-    if (is.null(recs)) return(invisible(NULL))
-    recs <- utils::head(as.data.frame(recs), 10L)
-    ## columns per recommendation-algorithm.md "Recommendation output columns".
-    show <- intersect(c("player", "pos", "points", "vor", "tier",
-                        "decision_score", "label", "reason"), names(recs))
-    if (!length(show)) show <- names(recs)
-    say("recomendacoes:")
-    for (i in seq_len(nrow(recs))) {
-      say("  ", i, ". ", paste(format(recs[i, show]), collapse = "  "))
-    }
+  recs <- tryCatch(
+    recommend_players(state, snapshot),
+    error = function(e) { say("  recommend_players(): ", conditionMessage(e)); NULL }
+  )
+  if (is.null(recs)) return(invisible(NULL))
+  if (nrow(recs) == 0L) {
+    say("(sem recomendacoes -- draft completo ou nenhum jogador elegivel)")
     return(invisible(NULL))
   }
-  say("(recomendacoes chegam na story 5 -- board por valor abaixo)")
-  .warroom_print_board(view, NULL, say)
+  fmt_num <- function(x, digits = 1L, plus = FALSE) {
+    if (length(x) != 1L || is.na(x)) return("-")
+    sprintf(if (plus) paste0("%+.", digits, "f") else paste0("%.", digits, "f"), x)
+  }
+  say("recomendacoes (top ", nrow(recs), "):")
+  for (i in seq_len(nrow(recs))) {
+    r <- recs[i, ]
+    say(sprintf("  %2d. %-22s %-3s  score %5.1f  [%s]",
+                i, substr(r$player, 1L, 22L), r$pos, r$decision_score, r$label))
+    say(sprintf("      pts %s  VOR %s  tier %s  ADP %s  |  %s",
+                fmt_num(r$points), fmt_num(r$vor, plus = TRUE),
+                if (is.na(r$tier)) "-" else as.character(r$tier),
+                fmt_num(r$adp), r$reason))
+  }
+  invisible(NULL)
 }
 
 .warroom_print_help <- function(say) {

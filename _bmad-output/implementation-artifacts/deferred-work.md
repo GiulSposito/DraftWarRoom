@@ -61,3 +61,7 @@ Issues surfaced during review but intentionally not fixed in the story that foun
 - source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/4-operational-terminal-draft.md`
   summary: `.warroom_print_board` hardcodes a 15-row cap with no way for the user to ask for more, even though `available_board()` already accepts an `n` argument. `/board <n>` or `/board <pos> <n>` would be a natural extension.
   evidence: Adversarial review finding; minor usability gap, out of scope for the required command set.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/5-roster-aware-recommendation-foundation.md`
+  summary: `recommend_players()` takes ~130 ms per call on the dev machine (20-call benchmark, ~60-pick mid-draft state). It recomputes `.warroom_best_lineup` — which re-runs `.warroom_slot_counts` and re-sorts the whole roster by position — once per eligible candidate (~180×), and `.warroom_tier_cliff` re-filters the full `available` table per candidate.
+  evidence: Comfortably under the terminal need, but CAP-11 / story 8 targets ~300 ms for the Shiny recommendation refresh and this is already ~40% of that budget before any UI overhead. A focused pass before or during story 8 should hoist the per-position sorted base lineup out of the candidate loop and pre-group `available` by position once.
