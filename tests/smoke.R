@@ -1452,6 +1452,263 @@ if (any(grepl("genetic|evolution|GA\\(", s7_sim_src))) {
 
 cat("story 7 offline checks OK -- opponent_pick + simulate_draft + compare_strategies + calibrate_weights\n")
 
+## --- story 8: thin Shiny war room (offline) ------------------------------
+## Drive app.R's server() via shiny::testServer(), covering every row of the
+## story-8 I/O & Edge-Case matrix, plus roster_slots() unit checks and the
+## static-analysis acceptance criteria (no redefinitions, no pnorm/rnorm/
+## runif, no network). Reuses snap, team_order, cfg, fail, expect_error from
+## the earlier scope. tempdir() only, no network.
+
+source("app.R")   # defines ui, server, %||%, .warroom_app_config()
+if (!is.function(server)) fail("s8: app.R did not define server() as a function")
+app_obj <- shiny::shinyApp(ui, server)
+if (!inherits(app_obj, "shiny.appobj")) fail("s8: shinyApp(ui, server) did not return a shiny.appobj")
+
+## server()'s signature must match run_draft()'s dependency-injection pattern
+## (Boundaries & Constraints).
+if (!identical(names(formals(server)),
+               c("input", "output", "session", "snapshot", "state_path", "config"))) {
+  fail("s8: server() formals do not match the injectable signature")
+}
+
+## shiny::testServer() (this shiny version) only forwards `args` to a MODULE
+## server (first formal named "id"); a plain server function like ours makes
+## it stop with "Arguments were provided to a server function." Bake
+## snapshot/state_path/config in as literal formal defaults instead -- same
+## tempdir()-fixture guarantee (data/ and state/ are never touched), just
+## supplied a different way.
+.s8_bake_server <- function(snapshot, state_path, config) {
+  srv <- server
+  formals(srv)$snapshot   <- snapshot
+  formals(srv)$state_path <- state_path
+  formals(srv)$config     <- config
+  srv
+}
+
+## (8a) No state/draft.rds -> new_draft() with default team_order / config
+## user_team, saved immediately; banner shows R01 overall 1.
+s8a_path <- file.path(tempdir(), "warroom-s8a", "draft.rds")
+unlink(dirname(s8a_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s8a_path, cfg), {
+  b <- output$banner
+  if (!grepl("R01", b, fixed = TRUE) || !grepl("overall 1", b, fixed = TRUE)) {
+    fail("s8: new-draft banner wrong: ", b)
+  }
+})
+if (!file.exists(s8a_path)) fail("s8: new draft not saved on first load")
+d8a <- load_state(s8a_path)
+if (nrow(d8a$picks) != 0L) fail("s8: fresh state should have 0 picks")
+if (!identical(d8a$user_team, cfg$user_team)) fail("s8: user_team not taken from config.R")
+if (!identical(d8a$team_order, sprintf("Team %02d", seq_len(cfg$league$teams)))) {
+  fail("s8: team_order not the default 'Team NN' sequence")
+}
+
+## (8b) Existing state/draft.rds -> load_state() used; banner reflects
+## derive_draft_view().
+s8b_path <- file.path(tempdir(), "warroom-s8b", "draft.rds")
+unlink(dirname(s8b_path), recursive = TRUE)
+pre <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+pre <- record_pick(pre, snap$players$player_id[1], snap)
+pre <- record_pick(pre, snap$players$player_id[2], snap)
+save_state(pre, s8b_path)
+shiny::testServer(.s8_bake_server(snap, s8b_path, cfg), {
+  if (!identical(state()$picks, pre$picks)) {
+    fail("s8: resumed state picks differ from the pre-existing file")
+  }
+  v <- derive_draft_view(state(), snap)
+  if (!identical(v$current_overall, 3L)) fail("s8: resumed view current_overall wrong")
+  b <- output$banner
+  if (!grepl("overall 3", b, fixed = TRUE)) {
+    fail("s8: resumed banner does not reflect derive_draft_view(): ", b)
+  }
+})
+
+## (8c) Draft a player via input$draft_btn -> record_pick() + save_state();
+## player disappears from view()$available; server reactive recommendation
+## order is identical() to the direct terminal call (equivalence row).
+s8c_path <- file.path(tempdir(), "warroom-s8c", "draft.rds")
+unlink(dirname(s8c_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s8c_path, cfg), {
+  term_rec <- recommend_players(state(), snap)
+  if (!identical(recs()$player_id, term_rec$player_id)) {
+    fail("s8: server reactive recommendation order differs from recommend_players()")
+  }
+  if (!identical(recs(), term_rec)) {
+    fail("s8: server reactive recommendation values differ from recommend_players()")
+  }
+  pid <- view()$available$player_id[1]
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 1)
+  if (nrow(state()$picks) != 1L)          fail("s8: draft_btn did not record a pick")
+  if (state()$picks$player_id[1] != pid)  fail("s8: draft_btn recorded the wrong player")
+  if (pid %in% view()$available$player_id) fail("s8: drafted player still shows as available")
+
+  ## record_pick() rejects a re-draft of the same player -> showNotification,
+  ## state unchanged (no crash of the reactive session).
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 2)
+  if (nrow(state()$picks) != 1L) fail("s8: rejected re-draft changed the pick count")
+})
+d8c <- load_state(s8c_path)   # accepted pick persisted outside the session
+if (nrow(d8c$picks) != 1L) fail("s8: pick registered via draft_btn not persisted to disk")
+
+## (8d) Undo with no picks -> undo_pick() error caught, state unchanged. Undo
+## with a pick -> removed, player back in available, persisted.
+s8d_path <- file.path(tempdir(), "warroom-s8d", "draft.rds")
+unlink(dirname(s8d_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s8d_path, cfg), {
+  before <- state()
+  session$setInputs(undo_btn = 1)   # no picks yet
+  if (!identical(state()$picks, before$picks)) {
+    fail("s8: undo_btn on an empty draft changed state")
+  }
+
+  pid <- view()$available$player_id[1]
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 1)
+  if (nrow(state()$picks) != 1L) fail("s8: setup pick before undo failed")
+
+  session$setInputs(undo_btn = 2)
+  if (nrow(state()$picks) != 0L) fail("s8: undo_btn did not remove the pick")
+  if (!(pid %in% view()$available$player_id)) fail("s8: undone player not back in available")
+})
+d8d <- load_state(s8d_path)
+if (nrow(d8d$picks) != 0L) fail("s8: undo not persisted (state file still has the undone pick)")
+
+## (8e) Equivalence rehearsal, mid-draft roster: same state/draft.rds +
+## snapshot, terminal recommend_players() vs the server's reactive ->
+## identical() player_id order (and full frame).
+s8e_path <- file.path(tempdir(), "warroom-s8e", "draft.rds")
+unlink(dirname(s8e_path), recursive = TRUE)
+mid8 <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+for (i in 1:15) mid8 <- record_pick(mid8, snap$players$player_id[i], snap)
+save_state(mid8, s8e_path)
+term_mid_rec  <- recommend_players(mid8, snap)
+mid8_view     <- derive_draft_view(mid8, snap)
+mid8_roster   <- mid8_view$rosters[["Team 01"]]
+mid8_slots    <- roster_slots(mid8_roster, mid8$league)
+mid8_top_qb   <- available_board(mid8_view, pos = "QB", n = 1L)
+mid8_top_rb   <- available_board(mid8_view, pos = "RB", n = 1L)
+shiny::testServer(.s8_bake_server(snap, s8e_path, cfg), {
+  if (!identical(recs()$player_id, term_mid_rec$player_id)) {
+    fail("s8: mid-draft server recommendation order differs from the terminal call")
+  }
+  if (!identical(recs(), term_mid_rec)) {
+    fail("s8: mid-draft server recommendation values differ from the terminal call")
+  }
+
+  ## output$roster_table (verification-gap "Regression gap": roster_slots()'s
+  ## only real call site was never rendered by a test) -- cross-check the
+  ## rendered HTML against a direct roster_slots() call on the same roster, so
+  ## a swapped pontos/vor column or a broken match() alignment would fail here.
+  rt <- output$roster_table
+  for (i in seq_len(nrow(mid8_roster))) {
+    pid <- mid8_roster$player_id[i]
+    slot_i <- mid8_slots$slot[mid8_slots$player_id == pid]
+    row_re <- sprintf(
+      "<td> %s </td>.*<td> %s </td>.*<td> %s </td>.*<td align=\"right\"> %s </td>.*<td align=\"right\"> %s </td>",
+      slot_i, mid8_roster$player[i], mid8_roster$pos[i],
+      sprintf("%.2f", mid8_roster$points[i]), sprintf("%.2f", mid8_roster$vor[i]))
+    if (!grepl(row_re, rt)) {
+      fail("s8: roster_table does not render the expected slot/player/pos/pontos/vor row for ", pid)
+    }
+  }
+
+  ## output$recent_picks_table -- last pick (overall 15) must appear, ordered
+  ## before an earlier pick (overall 14).
+  rp <- output$recent_picks_table
+  pl15 <- snap$players[snap$players$player_id == mid8$picks$player_id[15], ]
+  pl14 <- snap$players[snap$players$player_id == mid8$picks$player_id[14], ]
+  if (!grepl(sprintf(">  15 </td> <td> %s </td> <td> %s </td>", pl15$player, pl15$pos),
+            rp, fixed = FALSE)) {
+    fail("s8: recent_picks_table missing/wrong row for the most recent pick")
+  }
+  pos15 <- regexpr(paste0(">  15 </td>"), rp, fixed = TRUE)
+  pos14 <- regexpr(paste0(">  14 </td>"), rp, fixed = TRUE)
+  if (pos15 < 0 || pos14 < 0 || pos15 > pos14) {
+    fail("s8: recent_picks_table not ordered most-recent-first")
+  }
+  if (!grepl(pl15$player, rp, fixed = TRUE) || !grepl("Team 10", rp, fixed = TRUE)) {
+    fail("s8: recent_picks_table missing expected team for the most recent pick")
+  }
+
+  ## output$available_table + input$pos_filter -- filtering by position
+  ## actually narrows the board (previously undriven by any test).
+  session$setInputs(pos_filter = "QB")
+  av_qb <- output$available_table
+  if (!grepl(mid8_top_qb$player[1], av_qb, fixed = TRUE)) {
+    fail("s8: available_table (QB filter) missing the top available QB")
+  }
+  if (grepl(mid8_top_rb$player[1], av_qb, fixed = TRUE)) {
+    fail("s8: available_table (QB filter) leaked a non-QB player -- filter not applied")
+  }
+})
+
+## (8f) Draft complete -> banner shows "DRAFT COMPLETO", recommendations empty.
+s8f_path <- file.path(tempdir(), "warroom-s8f", "draft.rds")
+unlink(dirname(s8f_path), recursive = TRUE)
+full8 <- new_draft(snap, team_order, "Team 01", league = cfg$league)
+full8$picks <- data.frame(
+  overall = 1:168, player_id = snap$players$player_id[1:168],
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:168,
+  stringsAsFactors = FALSE
+)
+save_state(full8, s8f_path)
+shiny::testServer(.s8_bake_server(snap, s8f_path, cfg), {
+  b <- output$banner
+  if (!grepl("DRAFT COMPLETO", b, fixed = TRUE)) fail("s8: completed-draft banner wrong: ", b)
+  if (nrow(recs()) != 0L) fail("s8: completed-draft recommendations not empty")
+})
+
+## (8g) roster_slots(): reuses .warroom_sim_starter_ids() twice (real FLEX,
+## then FLEX = 0L) to isolate who occupies FLEX; K/DST always land in BENCH,
+## same convention as lineup_value()/.warroom_best_lineup().
+r8 <- data.frame(
+  player_id = c("q1", "r1", "r2", "r3", "w1", "w2", "t1", "k1", "d1"),
+  pos       = c("QB", "RB", "RB", "RB", "WR", "WR", "TE", "K", "DST"),
+  vor       = c(50, 40, 35, 30, 45, 20, 15, 5, 5),
+  points    = c(300, 250, 240, 230, 260, 200, 180, 130, 140),
+  stringsAsFactors = FALSE
+)
+sl8 <- roster_slots(r8, cfg$league)
+if (!identical(names(sl8), c("player_id", "slot"))) fail("s8: roster_slots() columns wrong")
+if (!identical(sort(sl8$player_id), sort(r8$player_id))) {
+  fail("s8: roster_slots() dropped or added rows")
+}
+slot_of <- function(pid) sl8$slot[sl8$player_id == pid]
+if (slot_of("q1") != "QB")                          fail("s8: roster_slots(): QB starter wrong")
+if (slot_of("r1") != "RB" || slot_of("r2") != "RB") fail("s8: roster_slots(): RB starters wrong")
+if (slot_of("r3") != "FLEX") {
+  fail("s8: roster_slots(): 3rd RB should occupy FLEX, got ", slot_of("r3"))
+}
+if (slot_of("w1") != "WR" || slot_of("w2") != "WR") fail("s8: roster_slots(): WR starters wrong")
+if (slot_of("t1") != "TE")                          fail("s8: roster_slots(): TE starter wrong")
+if (slot_of("k1") != "BENCH" || slot_of("d1") != "BENCH") {
+  fail("s8: roster_slots(): K/DST should be BENCH (lineup_value() never starts them)")
+}
+if (nrow(roster_slots(NULL, cfg$league)) != 0L)      fail("s8: roster_slots(NULL) not 0 rows")
+if (nrow(roster_slots(r8[0, ], cfg$league)) != 0L)   fail("s8: roster_slots(0-row) not 0 rows")
+
+## (8h) Static analysis: app.R redefines no core formula/function, names no
+## RNG symbol, and makes no network / scrape call (Acceptance Criteria).
+app_src <- readLines("app.R", warn = FALSE)
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|rbinom\\(|rpois\\(|rexp\\(|\\bsample\\(",
+             app_src))) {
+  fail("s8: app.R names an RNG symbol")
+}
+redefined <- grepl(
+  "^(recommend_players|lineup_value|derive_draft_view|record_pick|undo_pick|save_state|load_state|roster_slots)\\s*<-",
+  app_src)
+if (any(redefined)) {
+  fail("s8: app.R redefines a core function: ", paste(app_src[redefined], collapse = " | "))
+}
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|RCurl::|download\\.file\\(",
+             app_src))) {
+  fail("s8: app.R names a network / scrape symbol")
+}
+
+cat("story 8 offline checks OK -- app.R server() + roster_slots() + terminal/Shiny equivalence\n")
+
 ## --- Summary (I/O matrix: "smoke offline") -------------------------------
 cat(sprintf("smoke OK -- %d players in %s\n", n, snapshot_path))
 for (p in names(pos_tab)) cat(sprintf("  %-3s %3d\n", p, pos_tab[[p]]))

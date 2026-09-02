@@ -157,6 +157,50 @@ lineup_value <- function(roster, league) {
   .warroom_best_lineup(as.character(roster$pos), .warroom_value_of(roster), league)
 }
 
+#' Slot assignment for a roster: starters (QB/RB/WR/TE/FLEX) and bench (CAP-11,
+#' story 8 -- Shiny roster view).
+#'
+#' Reuses `.warroom_sim_starter_ids()` (`R/simulation.R`, already reused across
+#' files by story 7's simulator) twice: once with the real `league$roster`
+#' (every starter, FLEX included), once with a copy where `roster[["FLEX"]]` is
+#' `0L` (only the "pure" QB/RB/WR/TE starters, no FLEX). The set difference
+#' between the two is exactly who occupies FLEX -- no new starter-selection
+#' logic. K/DST are never starters under `.warroom_sim_starter_ids()` (it
+#' mirrors `.warroom_best_lineup()`, which never counts them), so they land in
+#' BENCH here too, same as everywhere else in the core.
+#'
+#' @param roster a data frame of player rows with `player_id`, `pos` and
+#'   `vor`/`points` (`derive_draft_view()$rosters[[team]]`; may be 0 rows or
+#'   `NULL`).
+#' @param league the `state$league` list (`roster` counts, `flex_positions`).
+#' @return `data.frame(player_id, slot)`, one row per roster player, `slot` one
+#'   of QB/RB/WR/TE/FLEX/BENCH.
+roster_slots <- function(roster, league) {
+  if (is.null(roster) || !is.data.frame(roster) || nrow(roster) == 0L) {
+    return(data.frame(player_id = character(0), slot = character(0),
+                      stringsAsFactors = FALSE))
+  }
+  if (is.null(roster$player_id) || is.null(roster$pos)) {
+    stop("roster_slots(): roster needs player_id and pos columns")
+  }
+
+  full_ids <- .warroom_sim_starter_ids(roster, league)
+
+  league_no_flex <- league
+  league_no_flex$roster[["FLEX"]] <- 0L
+  pure_ids <- .warroom_sim_starter_ids(roster, league_no_flex)
+
+  flex_ids <- setdiff(full_ids, pure_ids)
+  pid <- as.character(roster$player_id)
+
+  slot <- ifelse(
+    pid %in% flex_ids, "FLEX",
+    ifelse(pid %in% pure_ids, as.character(roster$pos), "BENCH")
+  )
+
+  data.frame(player_id = pid, slot = slot, stringsAsFactors = FALSE)
+}
+
 ## Unfilled mandatory slots for a roster: per-position need plus a FLEX need not
 ## already covered by RB/WR surplus. `total` drives the viability squeeze.
 .warroom_unfilled_mandatory <- function(roster, league) {
