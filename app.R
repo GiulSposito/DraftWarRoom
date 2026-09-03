@@ -161,6 +161,19 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
   view <- reactive({ derive_draft_view(state(), snapshot) })
   recs <- reactive({ recommend_players(state(), snapshot) })
 
+  ## Position-badge view over the cached recs() frame (story 11 / 14). Pure
+  ## subset -- recommend_players() is never re-called on a badge change or a row
+  ## click (AGENTS.md performance guardrail). The smart list renders this; the
+  ## row-click observers register recs_view()$player_id[k].
+  recs_view <- reactive({
+    r   <- recs()
+    pos <- input$recs_pos_filter %||% "Todos"
+    if (!identical(pos, "Todos")) {
+      r <- r[!is.na(r$pos) & r$pos == pos, , drop = FALSE]
+    }
+    r
+  })
+
   ## --- player picker: choices follow the current available board ---------
   observe({
     av <- view()$available
@@ -190,11 +203,14 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
   ## Tone string instead of raising a transient notification. The pick number N
   ## in the already-drafted / undo messages is derived from state()$picks
   ## (overall of the matching row) -- a persisted fact, never a new field.
-  observeEvent(input$draft_btn, {
-    pid <- input$player_choice
+  ##
+  ## do_pick() is the single pick code path (story 14): both the "Registrar"
+  ## button and a click on a candidate row call it, so record_pick() is invoked
+  ## in exactly one place. `empty_msg` is the caller-specific text shown when the
+  ## incoming id is missing (the search box vs an out-of-range recommendation).
+  do_pick <- function(pid, empty_msg) {
     if (is.null(pid) || length(pid) != 1L || is.na(pid) || !nzchar(pid)) {
-      feedback(list(kind = "error",
-                    text = "Selecione um jogador na busca antes de registrar."))
+      feedback(list(kind = "error", text = empty_msg))
       return(invisible(NULL))
     }
     tryCatch({
@@ -215,6 +231,28 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
                       text = sprintf("Pick não registrado: %s", msg)))
       }
     })
+  }
+
+  observeEvent(input$draft_btn, {
+    do_pick(input$player_choice,
+            "Selecione um jogador na busca antes de registrar.")
+  })
+
+  ## Click-to-pick (story 14). Each candidate row is a <button id="pick_row_k">
+  ## bound as a Shiny action button; row k registers the player at rank k of the
+  ## currently filtered frame (recs_view()). Fixed at 10 rows -- the n = 10L
+  ## default of recommend_players(). Same do_pick() path as the button above; a
+  ## row click never re-calls recommend_players().
+  ## lapply (not `for`) so the index never leaks into the server environment;
+  ## force() pins it before observeEvent captures the deferred eventExpr.
+  lapply(seq_len(10L), function(rank_i) {
+    force(rank_i)
+    nm <- sprintf("pick_row_%d", rank_i)
+    observeEvent(input[[nm]], {
+      rv  <- recs_view()
+      pid <- if (rank_i <= nrow(rv)) rv$player_id[rank_i] else NA_character_
+      do_pick(pid, "Essa recomendação não está mais na lista.")
+    }, ignoreInit = TRUE)
   })
 
   observeEvent(input$undo_btn, {
@@ -324,18 +362,17 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
   ## Smart list of candidates (story 11, A3). Pure formatting over the frame
   ## recommend_players() already returned -- no column is recomputed and the
   ## row order is never touched (DESIGN.md "Lista inteligente"). The position
-  ## badge subsets the cached recs() reactive; recommend_players() is not
-  ## re-called on a filter change (AGENTS.md performance guardrail).
+  ## badge subsets the cached recs() reactive (via recs_view());
+  ## recommend_players() is not re-called on a filter change or a row click
+  ## (AGENTS.md performance guardrail). Story 14: each row is a click target
+  ## (<button>) and the reason/tier/score render at --ink (see www/styles.css).
   output$recs_table <- renderUI({
-    r <- recs()
-    if (nrow(r) == 0L) {
+    if (nrow(recs()) == 0L) {
       return(tags$p(class = "smart-list-empty", "Nenhum candidato disponível."))
     }
     pos     <- input$recs_pos_filter %||% "Todos"
     all_pos <- identical(pos, "Todos")
-    if (!all_pos) {
-      r <- r[!is.na(r$pos) & r$pos == pos, , drop = FALSE]
-    }
+    r <- recs_view()
     if (nrow(r) == 0L) {
       return(tags$p(class = "smart-list-empty",
                     sprintf("Nenhum candidato %s nas recomendações.", pos)))
@@ -362,14 +399,23 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
         pos_txt <- paste(pos_txt, nfl)
       }
       ## nº 1 marker: the action-green rank only when the list is unfiltered
-      ## (then row 1 is the pick Enter would register). Under a position badge
-      ## row 1 is only "best <POS>" -- emphasised by weight, not colour.
-      row_cls <- if (i != 1L) "candidate"
-                 else if (all_pos) "candidate candidate--top"
-                 else "candidate candidate--first"
-      tags$div(
+      ## (then row 1 is the pick a click / Enter would register). Under a
+      ## position badge row 1 is only "best <POS>" -- emphasised by weight, not
+      ## colour. Class leads with "candidate" so story-11 row counts still match;
+      ## "action-button" makes the row a Shiny click target (story 14).
+      row_cls <- if (i != 1L) "candidate action-button"
+                 else if (all_pos) "candidate action-button candidate--top"
+                 else "candidate action-button candidate--first"
+      ## Native <button>: a click anywhere on the row -- and Enter / Space --
+      ## registers the pick via do_pick(). role="listitem" keeps the .smart-list
+      ## (role="list") item count / position for AT until story 23 promotes the
+      ## list to a proper listbox/option surface.
+      tags$button(
+        type = "button",
+        id = sprintf("pick_row_%d", i),
         class = row_cls,
         role = "listitem",
+        `aria-label` = paste("Registrar", r$player[i]),
         tags$span(class = "rank", sprintf("%02d", i)),
         tags$span(class = "name",
                   tags$span(class = "name-text", r$player[i]),

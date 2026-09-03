@@ -47,6 +47,13 @@
  * event. Container tokens are DESIGN.md verbatim (surface / border /
  * rounded.sm / spacing / typography.data).
  *
+ * Story 14 promotes the .candidate content (.reason / .tier / .score) from
+ * --ink-muted to --ink -- it is decision content, not decoration -- and turns
+ * each smart-list row into a native <button.candidate> (click / Enter / Space
+ * register the pick). --ink-muted stays on .candidate .rank, .smart-list-head
+ * and the .pos tag. button.candidate strips the UA button chrome; the hover /
+ * press ground is --surface-raised.
+ *
  * Load order: Shiny appends this UI-level tags$head <link> after the registered
  * Bootstrap dependency CSS, so these rules win on equal specificity; the few
  * !important flags below are only where a Bootstrap rule is more specific.
@@ -360,11 +367,45 @@ body,
   border-bottom: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 14px;
+  font-weight: 500;
   color: var(--ink);
 }
 
 .candidate:last-child {
   border-bottom: 0;
+}
+
+/* story 14: each row is a native <button> (click / Enter / Space -> register).
+ * Strip the UA button chrome; the .candidate grid rule already supplies layout,
+ * font-family, size and colour. font-weight is left to .candidate / --top /
+ * --first so the nº 1 emphasis survives. Keyboard focus ring comes from the
+ * global button:focus rule. */
+button.candidate {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  text-align: left;
+  color: var(--ink);
+  font-family: var(--mono);
+  line-height: 1.3;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+button.candidate:last-child {
+  border-bottom: 0;
+}
+
+/* hover / press / keyboard-focus affordance -- raised ground (DESIGN.md
+ * candidate-active). The focus ring itself still comes from the global
+ * button:focus rule; the ground keeps a focused row as visible as a hovered one. */
+button.candidate:hover,
+button.candidate:active,
+button.candidate:focus-visible {
+  background: var(--surface-raised);
 }
 
 .candidate .rank {
@@ -394,16 +435,19 @@ body,
   font-weight: 700;
 }
 
+/* tier / score / reason are decision content, not decoration -- rendered at
+ * --ink so they read on a scan (story 14). --ink-muted stays on .rank and
+ * .smart-list-head (decoration) and .pos (non-critical positional tag). */
 .candidate .tier,
 .candidate .score {
-  color: var(--ink-muted);
+  color: var(--ink);
   font-size: 11px;
 }
 
 .candidate .reason {
   grid-column: 2 / -1;
   margin-top: var(--space-1);
-  color: var(--ink-muted);
+  color: var(--ink);
   font-size: 11px;
   font-weight: 500;
 }
@@ -416,8 +460,9 @@ body,
 }
 
 /* .candidate--top only on the unfiltered list: raised ground + the sole
- * action-green rank marker -- the row Enter would register. */
-.candidate--top {
+ * action-green rank marker -- the row a click / Enter would register. Scoped
+ * under .smart-list so it outranks button.candidate's transparent background. */
+.smart-list .candidate--top {
   background: var(--surface-raised);
 }
 

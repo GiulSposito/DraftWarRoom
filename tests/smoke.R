@@ -3044,6 +3044,253 @@ if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
 
 cat("story 13 offline checks OK -- persistent pick/undo feedback region + microcopy pass\n")
 
+## --- story 14: candidate-list readability + click-to-pick (offline) --------
+## app.R promotes the .candidate content (reason/tier/score) to --ink and turns
+## each smart-list row into a <button id="pick_row_k"> bound as a Shiny action
+## button. A row click registers the player at rank k of the filtered frame via
+## the SAME do_pick() the "Registrar" button uses -- record_pick() stays a single
+## code path and is never re-called by recommend_players() on a click. Reuses
+## `fail`, `snap`, `team_order`, `cfg`, `league`, `.s8_bake_server`,
+## `.strip_html`, `.s11_count`.
+
+## shared mid-draft on-turn fixture: 23 picks -> overall 24 is Team 01 (user).
+.s14_mid <- function() {
+  st <- new_draft(snap, team_order, "Team 01", league = league)
+  for (i in 1:23) st <- record_pick(st, snap$players$player_id[i], snap)
+  st
+}
+mid14  <- .s14_mid()
+term14 <- recommend_players(mid14, snap)
+if (nrow(term14) < 5L) fail("s14: fixture mid-draft recs has < 5 rows -- precondition")
+if (isTRUE(attr(term14, "off_turn"))) fail("s14: mid14 should be the user's own pick -- precondition")
+if (length(unique(term14$player_id[1:3])) != 3L) fail("s14: fixture top-3 recs not distinct -- precondition")
+rb14 <- term14$player_id[term14$pos == "RB"]
+if (!length(rb14)) fail("s14: fixture mid-draft recs has no RB row -- precondition")
+
+## (14a) click row 1, unfiltered -> record_pick() of rank-01, ok feedback, saved.
+s14a_path <- file.path(tempdir(), "warroom-s14a", "draft.rds")
+unlink(dirname(s14a_path), recursive = TRUE)
+save_state(mid14, s14a_path)
+shiny::testServer(.s8_bake_server(snap, s14a_path, cfg), {
+  h <- .strip_html(output$recs_table)
+  if (!grepl("<button", h, fixed = TRUE)) fail("s14: smart-list rows are not <button>: ", h)
+  if (!grepl('id="pick_row_1"', h, fixed = TRUE)) fail("s14: no id=\"pick_row_1\" on row 1")
+  if (!grepl('class="candidate action-button', h, fixed = TRUE)) {
+    fail("s14: row class does not lead with 'candidate action-button': ", h)
+  }
+  ## role="listitem" is kept on the button so the .smart-list item count / index
+  ## stays available to AT until story 23's listbox/option pass.
+  if (!grepl('role="listitem"', h, fixed = TRUE)) fail("s14: row lost role=listitem")
+  if (!grepl(sprintf('aria-label="Registrar %s"', term14$player[1]), h, fixed = TRUE)) {
+    fail("s14: row 1 missing the 'Registrar <player>' aria-label: ", h)
+  }
+  if (.s11_count(h, 'class="candidate') != nrow(term14)) {
+    fail("s14: story-11 candidate row count broke with the new class order")
+  }
+  before <- nrow(state()$picks)
+  session$setInputs(pick_row_1 = 1)
+  if (nrow(state()$picks) != before + 1L) fail("s14: click on row 1 did not record a pick")
+  if (state()$picks$player_id[nrow(state()$picks)] != term14$player_id[1]) {
+    fail("s14: click on row 1 recorded the wrong player")
+  }
+  fb <- feedback()
+  if (!identical(fb$kind, "ok") || !grepl("Registrado:", fb$text, fixed = TRUE)) {
+    fail("s14: click feedback is not the ok 'Registrado:' line: ", fb$text)
+  }
+})
+d14a <- load_state(s14a_path)
+if (nrow(d14a$picks) != 24L) fail("s14: click-registered pick not persisted to disk")
+if (d14a$picks$player_id[24] != term14$player_id[1]) fail("s14: persisted click pick is the wrong player")
+
+## (14a2) a click on a row past rank 1 registers that row's player -- every
+## wired observer, not just pick_row_1 (guards an off-by-one in the observer loop
+## vs the render loop).
+s14a2_path <- file.path(tempdir(), "warroom-s14a2", "draft.rds")
+unlink(dirname(s14a2_path), recursive = TRUE)
+save_state(mid14, s14a2_path)
+shiny::testServer(.s8_bake_server(snap, s14a2_path, cfg), {
+  invisible(.strip_html(output$recs_table))  # flush so the pick_row_* observers baseline before the click
+  before <- nrow(state()$picks)
+  session$setInputs(pick_row_3 = 1)
+  if (nrow(state()$picks) != before + 1L) fail("s14: click on row 3 did not record a pick")
+  if (state()$picks$player_id[nrow(state()$picks)] != term14$player_id[3]) {
+    fail("s14: click on row 3 registered the wrong player (observer<->render index mismatch?)")
+  }
+})
+
+## (14b) click under a position badge -> registers the first RB of the frame.
+## Setting the badge must not disturb recs() (the one recompute is on the pick
+## that follows -- a legitimate state change); "never re-called on a filter or
+## click" is also pinned by the once-only recommend_players() static check (14g)
+## and story 11's badge test.
+s14b_path <- file.path(tempdir(), "warroom-s14b", "draft.rds")
+unlink(dirname(s14b_path), recursive = TRUE)
+save_state(mid14, s14b_path)
+shiny::testServer(.s8_bake_server(snap, s14b_path, cfg), {
+  session$setInputs(recs_pos_filter = "RB")
+  if (!identical(recs(), term14)) {
+    fail("s14: setting the RB badge changed the recs() frame")
+  }
+  before <- nrow(state()$picks)
+  session$setInputs(pick_row_1 = 1)
+  if (nrow(state()$picks) != before + 1L) fail("s14: filtered row-1 click did not record a pick")
+  if (state()$picks$player_id[nrow(state()$picks)] != rb14[1]) {
+    fail("s14: filtered row-1 click did not register the first RB of recs()")
+  }
+})
+
+## (14c) click a row index past the filtered frame -> the observer passes NA to
+## do_pick(); shared empty branch: error feedback, state untouched.
+s14c_path <- file.path(tempdir(), "warroom-s14c", "draft.rds")
+unlink(dirname(s14c_path), recursive = TRUE)
+save_state(mid14, s14c_path)
+shiny::testServer(.s8_bake_server(snap, s14c_path, cfg), {
+  session$setInputs(recs_pos_filter = "RB")
+  oob_k <- nrow(recs_view()) + 1L
+  if (oob_k > 10L) fail("s14: RB recs fill all 10 rows -- cannot exercise an out-of-range click")
+  before <- nrow(state()$picks)
+  do.call(session$setInputs, stats::setNames(list(1), sprintf("pick_row_%d", oob_k)))
+  if (nrow(state()$picks) != before) fail("s14: out-of-range row click changed state")
+  fb <- feedback()
+  if (!identical(fb$kind, "error") || !grepl("não está mais na lista", fb$text, fixed = TRUE)) {
+    fail("s14: out-of-range row click did not set the 'não está mais na lista' error: ", fb$text)
+  }
+})
+
+## (14d) matrix row: a row click landing on an already-drafted player (rare
+## race) -> the shared do_pick() already-drafted branch, state untouched. Driven
+## through do_pick() directly (it is in server scope) -- the exact function a
+## row click calls.
+s14e_path <- file.path(tempdir(), "warroom-s14e", "draft.rds")
+unlink(dirname(s14e_path), recursive = TRUE)
+save_state(mid14, s14e_path)
+shiny::testServer(.s8_bake_server(snap, s14e_path, cfg), {
+  drafted_id <- state()$picks$player_id[1]
+  before <- nrow(state()$picks)
+  do_pick(drafted_id, "unused")
+  if (nrow(state()$picks) != before) fail("s14: do_pick() on a drafted id changed state")
+  fb <- feedback()
+  if (!identical(fb$kind, "error") || !grepl("escolhido no pick", fb$text, fixed = TRUE)) {
+    fail("s14: do_pick() on a drafted id did not produce the 'ja escolhido' error: ", fb$text)
+  }
+})
+
+## (14e) regression: the "Registrar" button with no selection keeps the old
+## search-box message (do_pick's caller-specific empty_msg).
+s14d_path <- file.path(tempdir(), "warroom-s14d", "draft.rds")
+unlink(dirname(s14d_path), recursive = TRUE)
+save_state(mid14, s14d_path)
+shiny::testServer(.s8_bake_server(snap, s14d_path, cfg), {
+  session$setInputs(player_choice = "")
+  session$setInputs(draft_btn = 1)
+  fb <- feedback()
+  if (!identical(fb$kind, "error") ||
+      !grepl("Selecione um jogador na busca", fb$text, fixed = TRUE)) {
+    fail("s14: draft_btn empty-selection message changed: ", fb$text)
+  }
+})
+
+## (14f) contrast: reason / tier / score render at var(--ink); rank and the
+## column head stay var(--ink-muted); button.candidate reset + hover exist.
+css14 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+css14_code <- gsub("(?s)/\\*.*?\\*/", "", css14, perl = TRUE)
+reason14 <- regmatches(css14_code,
+  regexpr("\\.candidate \\.reason\\s*\\{[^}]*\\}", css14_code, perl = TRUE))
+if (length(reason14) != 1L) fail("s14: no '.candidate .reason { }' rule in styles.css")
+if (!grepl("color:\\s*var\\(--ink\\)", reason14, perl = TRUE) ||
+    grepl("var\\(--ink-muted\\)", reason14, perl = TRUE)) {
+  fail("s14: '.candidate .reason' is not at var(--ink): ", reason14)
+}
+ts14 <- regmatches(css14_code, regexpr(
+  "\\.candidate \\.tier,\\s*\\.candidate \\.score\\s*\\{[^}]*color:[^}]*\\}",
+  css14_code, perl = TRUE))
+if (length(ts14) != 1L) fail("s14: no '.candidate .tier, .candidate .score { color: ... }' rule")
+if (!grepl("color:\\s*var\\(--ink\\)", ts14, perl = TRUE) ||
+    grepl("var\\(--ink-muted\\)", ts14, perl = TRUE)) {
+  fail("s14: '.candidate .tier/.score' is not at var(--ink): ", ts14)
+}
+rank14 <- regmatches(css14_code,
+  regexpr("\\.candidate \\.rank\\s*\\{[^}]*\\}", css14_code, perl = TRUE))
+if (!length(rank14) || !grepl("var\\(--ink-muted\\)", rank14, perl = TRUE)) {
+  fail("s14: '.candidate .rank' no longer at var(--ink-muted) -- decoration must stay muted")
+}
+if (!grepl("button\\.candidate\\s*\\{", css14_code, perl = TRUE)) {
+  fail("s14: no 'button.candidate { }' UA-reset rule in styles.css")
+}
+if (!grepl("button.candidate:hover", css14_code, fixed = TRUE)) {
+  fail("s14: no 'button.candidate:hover' interaction affordance in styles.css")
+}
+if (!grepl("button.candidate:focus-visible", css14_code, fixed = TRUE)) {
+  fail("s14: no 'button.candidate:focus-visible' -- keyboard focus less visible than hover")
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css14_code, perl = TRUE)) {
+  fail("s14: styles.css pulls a remote asset -- network on the live path")
+}
+
+## (14g) static app.R analysis: single pick path, adapter stays thin.
+app14 <- readLines("app.R", warn = FALSE)
+if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app14))) {
+  fail("s14: app.R introduced a forbidden JS / theming dependency")
+}
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app14))) fail("s14: app.R names an RNG symbol")
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.file\\(", app14))) {
+  fail("s14: app.R names a network / scrape symbol")
+}
+app14_code <- sub("#.*$", "", app14)
+for (fn in c("record_pick", "undo_pick")) {
+  if (sum(grepl(sprintf("%s\\(", fn), app14_code)) != 1L) {
+    fail(sprintf("s14: %s() not called exactly once in app.R code -- single pick path", fn))
+  }
+}
+if (sum(grepl("recommend_players\\(", app14_code)) != 1L) {
+  fail("s14: recommend_players() not called exactly once in app.R code")
+}
+if (!any(grepl("do_pick\\s*<-\\s*function", app14_code))) fail("s14: app.R does not define do_pick()")
+if (!any(grepl("recs_view\\s*<-\\s*reactive", app14_code))) fail("s14: app.R does not define recs_view()")
+if (any(grepl("^\\s*(do_pick|recs_view)\\s*<<-", app14_code))) fail("s14: do_pick / recs_view use <<-")
+
+## (14h) www/styles.css absent at runtime: the button list still assembles AND a
+## row click still registers. Same swap-and-restore as the story 9 / 11 checks.
+s14css_path <- file.path(tempdir(), "warroom-s14css", "draft.rds")
+unlink(dirname(s14css_path), recursive = TRUE)
+save_state(mid14, s14css_path)
+s14_css_bak <- file.path(tempdir(), "styles.css.s14bak")
+if (!file.copy("www/styles.css", s14_css_bak, overwrite = TRUE)) {
+  fail("s14: could not stage a backup of www/styles.css for the css-absent check")
+}
+s14_css_seen <- NULL
+s14_css_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s14_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s14_env))
+  srv <- s14_env$server
+  formals(srv)$snapshot   <- snap
+  formals(srv)$state_path <- s14css_path
+  formals(srv)$config     <- cfg
+  shiny::testServer(srv, {
+    hh <- .strip_html(output$recs_table)
+    b0 <- nrow(state()$picks)
+    session$setInputs(pick_row_1 = 1)
+    s14_css_seen <<- grepl("<button", hh, fixed = TRUE) &&
+      .s11_count(hh, 'class="candidate') > 0L &&
+      nrow(state()$picks) == b0 + 1L
+  })
+  isTRUE(s14_css_seen)
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s14_css_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) fail("s14: www/styles.css not restored after the css-absent check")
+if (!isTRUE(s14_css_ok)) {
+  fail("s14: button list / click did not work with www/styles.css absent: ",
+       attr(s14_css_ok, "msg"))
+}
+
+cat("story 14 offline checks OK -- candidate-list --ink content + click-to-pick buttons\n")
+
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript
 ## scripts/prepare.R` with no --force must refuse. The guard is placed above the
