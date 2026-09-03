@@ -54,6 +54,15 @@
  * and the .pos tag. button.candidate strips the UA button chrome; the hover /
  * press ground is --surface-raised.
  *
+ * Story 15 adds the .all-rosters block: every league team's roster as a
+ * compact .team-roster card, reusing the story-12 .roster-panel / .roster-row
+ * shapes. A native <details> (in the static ui tree, so its collapse survives
+ * per-pick re-renders) gives collapse with no JS. This file's first @media rule
+ * lives here: wide = multi-column grid, narrow (docked next to ESPN) = one
+ * column. The open grid is height-capped with an internal scroll at any width.
+ * The operator's own team is marked by a textual "VOCE" tag plus an --ink
+ * border -- never --focus, which is reserved for keyboard focus.
+ *
  * Load order: Shiny appends this UI-level tags$head <link> after the registered
  * Bootstrap dependency CSS, so these rules win on equal specificity; the few
  * !important flags below are only where a Bootstrap rule is more specific.
@@ -77,6 +86,7 @@
   --danger: #FF6B6B;
 
   --radius-sm: 2px;
+  --radius-full: 9999px;   /* DESIGN.md rounded.full -- small badges only */
 
   --space-1: 4px;
   --space-2: 8px;
@@ -559,6 +569,117 @@ button.candidate:focus-visible {
 .roster-row .empty {
   grid-column: 2 / -1;
   color: var(--ink-muted);
+}
+
+/* --- all-team rosters panel (story 15) -------------------------------- */
+/* Every league team's roster as a compact card that reuses the .roster-panel /
+ * .roster-row shapes of story 12. EXPERIENCE.md treats opponent rosters as an
+ * occasional lookup and points them at the board (story 18); this collapsible
+ * foot-of-page panel is the interim surface. The <details> wrapper is in the
+ * static ui tree; this block only styles it. Colours / spacing / radius / type
+ * are DESIGN.md tokens; raw layout dimensions (220px, 900px, vh) follow the px
+ * already used by .smart-list / .roster-row. */
+
+.all-rosters {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: var(--space-2);
+}
+
+.all-rosters > summary {
+  padding: var(--space-2);
+  cursor: pointer;
+}
+
+/* the <summary> wraps the section <h4>; render it inline as a label-type
+ * heading, matching .roster-group-label / .smart-list-head. */
+.all-rosters > summary > h4 {
+  display: inline;
+  margin: 0;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.all-rosters > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.all-rosters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2);
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+/* the open grid is height-capped with an internal scroll at ANY width -- a
+ * wide but short viewport needs it too. */
+.all-rosters[open] .all-rosters-grid {
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.team-roster {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* operator's own team: an --ink border is emphasis, always paired with the
+ * "VOCE" tag (DESIGN.md section Colors: never colour alone). NOT --focus --
+ * a permanent blue border reads as a stuck keyboard-focus ring. */
+.team-roster--you {
+  border-color: var(--ink);
+}
+
+.team-roster-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.team-roster-name {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* "VOCE" tag -- a small inverted pill (DESIGN.md: pills are for small badges;
+ * ink-on-surface, never the reserved --focus / --action). Real affordance, not
+ * plain text: the card border is the paired non-textual cue. */
+.team-roster-you {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--ink);
+  color: var(--surface);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+/* the card's inner roster panel already sits inside .team-roster -- drop the
+ * story-12 outer chrome so borders do not double up. */
+.team-roster .roster-panel {
+  border: 0;
+  border-radius: 0;
+}
+
+@media (max-width: 900px) {
+  .all-rosters-grid {
+    grid-template-columns: 1fr;
+  }
+  .all-rosters[open] .all-rosters-grid {
+    max-height: 60vh;
+  }
 }
 
 /* --- section headings ------------------------------------------------------ */

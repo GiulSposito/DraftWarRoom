@@ -85,6 +85,20 @@ ui <- fluidPage(
 
   fluidRow(
     column(12, h4("Disponíveis"), tableOutput("available_table"))
+  ),
+
+  ## All-team rosters (story 15). Full-width row at the foot of the page -- the
+  ## board / opponent-roster tier sits below the operational core (status,
+  ## recommendations, operator roster), DESIGN.md Layout & Spacing. The native
+  ## <details>/<summary> lives here in the static ui (not in the renderUI) so its
+  ## collapsed/open DOM state survives every per-pick re-render of the grid.
+  ## `open = NA` -> `<details ... open>` (open by default). The <summary> wraps
+  ## the section's <h4> so it is both the disclosure control and a heading.
+  fluidRow(
+    column(12,
+      tags$details(class = "all-rosters", open = NA,
+        tags$summary(tags$h4("Rosters dos times")),
+        uiOutput("all_rosters_table")))
   )
 )
 
@@ -433,23 +447,24 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
       rows)
   })
 
-  ## Grouped roster panel (story 12, A4). Pure formatting over
-  ## view()$rosters[[user_team]] + roster_slots() -- three fixed visual groups
-  ## (Titulares / FLEX / Banco), one row per league roster slot, unfilled slots
-  ## explicit ("- aberto" for starters/FLEX, "-" for the bench). roster_slots()
-  ## is the sole source for QB/RB/WR/TE/FLEX; K and DST are placed into their
-  ## dedicated Titulares slots by pos identity (a 1-to-1 placement, not starter
-  ## selection -- roster_slots() returns them as BENCH, mirroring lineup_value()),
-  ## and the bench excludes the K/DST so placed. No number (points/vor) is shown;
-  ## `val` (vor, points fallback -- same currency the old renderTable used,
-  ## duplication noted in deferred-work.md) only orders multi-slot rows and the
-  ## bench. Slot label is ink-muted / label type, deliberately NOT the reserved
-  ## action green (DESIGN.md section Colors).
-  output$roster_table <- renderUI({
-    st     <- state()
-    league <- st$league
-    rc     <- league$roster
-    roster <- view()$rosters[[st$user_team]]
+  ## Grouped roster panel builder (story 12, A4; factored out of
+  ## output$roster_table in story 15 so the all-team panel reuses the exact same
+  ## slotting and markup -- one slotting path, AGENTS.md). Pure formatting over a
+  ## derive_draft_view()$rosters[[team]] frame (0 rows or a data frame) +
+  ## roster_slots() -- three fixed visual groups (Titulares / FLEX / Banco), one
+  ## row per league roster slot, unfilled slots explicit ("- aberto" for
+  ## starters/FLEX, "-" for the bench). roster_slots() is the sole source for
+  ## QB/RB/WR/TE/FLEX; K and DST are placed into their dedicated Titulares slots
+  ## by pos identity (a 1-to-1 placement, not starter selection -- roster_slots()
+  ## returns them as BENCH, mirroring lineup_value()), and the bench excludes the
+  ## K/DST so placed. No number (points/vor) is shown; `val` (vor, points
+  ## fallback -- same currency the old renderTable used, duplication noted in
+  ## deferred-work.md) only orders multi-slot rows and the bench. Slot label is
+  ## ink-muted / label type, deliberately NOT the reserved action green
+  ## (DESIGN.md section Colors). `aria_label` names the panel per team.
+  roster_panel_ui <- function(roster, league,
+                              aria_label = "Roster do operador") {
+    rc <- league$roster
     has_players <- is.data.frame(roster) && nrow(roster) > 0L
 
     slot_at <- character(0)
@@ -534,10 +549,50 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     bench_rows <- fill_rows(bench_idx, rep("BN", n_bench), "—")
 
     tags$div(class = "roster-panel", role = "group",
-             `aria-label` = "Roster do operador",
+             `aria-label` = aria_label,
       group("Titulares", starter_rows),
       group("FLEX", flex_rows),
       group("Banco", bench_rows))
+  }
+
+  output$roster_table <- renderUI({
+    st <- state()
+    roster_panel_ui(view()$rosters[[st$user_team]], st$league,
+                    "Roster do operador")
+  })
+
+  ## All-team rosters grid (story 15). Read-only, derived every render from the
+  ## single derive_draft_view() call in `view`. It surfaces the same
+  ## per-team rosters the terminal's /teams command iterates over team_order to
+  ## print (the slot grouping here is this app's, not /teams' flat list).
+  ## EXPERIENCE.md frames opponent rosters as an occasional lookup ("outros
+  ## rosters acessiveis no board"); the board grid itself is story 18, so this
+  ## foot-of-page collapsible panel is the interim surface. Renders ONLY the
+  ## .all-rosters-grid: the native <details>/<summary> that collapses it lives in
+  ## the static `ui` tree, so the operator's collapse survives every per-pick
+  ## re-render (Shiny would discard <details open> DOM state if this output
+  ## emitted it). One .team-roster card per team, built by the same
+  ## roster_panel_ui() as the operator panel. The operator's own team carries a
+  ## textual "VOCE" tag, not colour alone (DESIGN.md section Colors).
+  ## `view()$rosters` is indexed by POSITION -- it is built as
+  ## lapply(seq_along(team_order), ...) so element i is team_order[i], and a
+  ## blank / NA team name in a legacy state file cannot break the panel; such a
+  ## name also falls back to "Time <i>" in the card head rather than printing NA.
+  output$all_rosters_table <- renderUI({
+    st  <- state()
+    ros <- view()$rosters
+    cards <- lapply(seq_along(st$team_order), function(i) {
+      tm  <- st$team_order[i]
+      nm  <- if (is.na(tm) || !nzchar(tm)) sprintf("Time %d", i) else tm
+      you <- !is.na(tm) && identical(tm, st$user_team)
+      tags$div(
+        class = if (you) "team-roster team-roster--you" else "team-roster",
+        tags$div(class = "team-roster-head",
+          tags$span(class = "team-roster-name", nm),
+          if (you) tags$span(class = "team-roster-you", "VOCÊ")),
+        roster_panel_ui(ros[[i]], st$league, paste("Roster", nm)))
+    })
+    tags$div(class = "all-rosters-grid", cards)
   })
 
   output$recent_picks_table <- renderTable({

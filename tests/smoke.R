@@ -3291,6 +3291,335 @@ if (!isTRUE(s14_css_ok)) {
 
 cat("story 14 offline checks OK -- candidate-list --ink content + click-to-pick buttons\n")
 
+## --- story 15: all-team rosters panel (offline, renderUI over view()$rosters) --
+## app.R factors the story-12 grouped roster panel into a local roster_panel_ui()
+## and adds output$all_rosters_table -- a renderUI that emits ONLY the
+## .all-rosters-grid (one .team-roster card per team in state()$team_order, each
+## panel built by the SAME roster_panel_ui(): one slotting path, AGENTS.md). The
+## native <details class="all-rosters" open> / <summary> that collapses the
+## section live in the STATIC ui tree (not the renderUI), so the operator's
+## collapse survives every per-pick re-render. view()$rosters is indexed by
+## position (built as lapply(seq_along(team_order), ...)). The operator's own
+## team card carries a textual "VOCE" tag and an --ink (not --focus) border.
+## Mirrors the terminal's /teams command. Reuses `fail`, `snap`, `team_order`,
+## `cfg`, `league`, `.s8_bake_server`, `.strip_html`, `.html_count`, and the
+## story-12 helpers `.s12_state`, `.s12_group`, `.s12_filled`, `s12_name`,
+## `s12_open`.
+
+s15_you <- "VOCÊ"  # "VOCE" with the circumflex, as rendered in the card head
+
+.s15_render <- function(st, snapshot = snap) {
+  p <- file.path(tempdir(), "warroom-s15", "draft.rds")
+  unlink(dirname(p), recursive = TRUE)
+  save_state(st, p)
+  out <- NULL
+  shiny::testServer(.s8_bake_server(snapshot, p, cfg), {
+    out <<- .strip_html(output$all_rosters_table)
+  })
+  out
+}
+
+## HTML of the one .team-roster card for `team`. Sliced from the card's opening
+## <div class="team-roster..."> (NOT the inner name span) so the --you class on
+## that div is inside the slice and the per-card negative check is real.
+.s15_card <- function(h, team) {
+  opens <- gregexpr('<div class="team-roster( team-roster--you)?">', h, perl = TRUE)[[1]]
+  if (length(opens) == 1L && opens[1] == -1L) fail("s15: no .team-roster divs: ", h)
+  name <- sprintf('<span class="team-roster-name">%s</span>', team)
+  j <- regexpr(name, h, fixed = TRUE)
+  if (j < 0L) fail("s15: panel has no card for '", team, "': ", h)
+  s <- max(opens[opens < j])
+  e <- if (any(opens > j)) min(opens[opens > j]) - 1L else nchar(h)
+  substring(h, s, e)
+}
+
+## (15a) mid-draft: the grid renders 12 cards in team_order order.
+s15_mid <- .s12_state(c("SYN-QB-001", "SYN-RB-001"))
+h15 <- .s15_render(s15_mid)
+if (!grepl('<div class="all-rosters-grid">', h15, fixed = TRUE)) {
+  fail("s15: output$all_rosters_table did not render the .all-rosters-grid: ", h15)
+}
+if (grepl("<details", h15, fixed = TRUE)) {
+  fail("s15: the <details> must live in the static ui, not output$all_rosters_table")
+}
+if (.html_count(h15, 'class="team-roster-name"') != 12L) {
+  fail("s15: not 12 team cards: ", .html_count(h15, 'class="team-roster-name"'))
+}
+s15_prev <- 0L
+for (tm in team_order) {
+  pp <- regexpr(sprintf('<span class="team-roster-name">%s</span>', tm), h15, fixed = TRUE)
+  if (pp < 0L) fail("s15: no card for ", tm)
+  if (pp < s15_prev) fail("s15: cards not rendered in team_order")
+  s15_prev <- pp
+}
+
+## (15b) the operator's team is marked -- textual tag + class, on that card only.
+if (.html_count(h15, 'class="team-roster team-roster--you"') != 1L) {
+  fail("s15: not exactly one .team-roster--you card")
+}
+if (.html_count(h15, sprintf('<span class="team-roster-you">%s</span>', s15_you)) != 1L) {
+  fail("s15: the 'VOCE' tag is not on exactly one card")
+}
+s15_c_you <- .s15_card(h15, "Team 01")
+if (!grepl("team-roster--you", s15_c_you, fixed = TRUE)) fail("s15: operator card lost the --you class")
+if (!grepl(s15_you, s15_c_you, fixed = TRUE)) fail("s15: operator card 'Team 01' has no VOCE tag")
+s15_c_opp <- .s15_card(h15, "Team 02")
+if (grepl("team-roster--you", s15_c_opp, fixed = TRUE) || grepl(s15_you, s15_c_opp, fixed = TRUE)) {
+  fail("s15: an opponent card is marked as the operator's")
+}
+
+## (15c) the operator card is built by roster_panel_ui() -- same filled slot the
+## story-12 operator panel produces, three groups; its aria-label names the team.
+if (!.s12_filled(.s12_group(s15_c_you, "Titulares"), "QB", s12_name("SYN-QB-001"))) {
+  fail("s15: operator card QB slot not filled by roster_panel_ui()")
+}
+if (.html_count(s15_c_you, '<div class="roster-group">') != 3L) fail("s15: operator card not 3 groups")
+## each card's panel aria-label names its own team (not "Roster do operador",
+## which is the dedicated output$roster_table only).
+if (!grepl('aria-label="Roster Team 01"', s15_c_you, fixed = TRUE)) {
+  fail("s15: operator card panel aria-label is not \"Roster Team 01\"")
+}
+
+## (15d) a partially-drafted opponent shows ITS OWN drafted players (not the
+## operator's), plus explicit "- aberto" for its still-open starter slots. Under
+## .s12_state(c("SYN-QB-001","SYN-RB-001")) the non-Team-01 picks are filled with
+## setdiff(all_ids, those) in overall order: overall 2 -> fillers[1], 3 ->
+## fillers[2], ... Team 03 (slot 3) holds overalls 3 and 22 => fillers[2] and
+## fillers[21]. A regression that indexed every card by st$user_team / a fixed
+## name would show SYN-QB-001 here instead.
+s15_fill  <- setdiff(snap$players$player_id, c("SYN-QB-001", "SYN-RB-001"))
+s15_t3_p1 <- s15_fill[2]
+s15_t3_p2 <- s15_fill[21]
+s15_c_t3  <- .s15_card(h15, "Team 03")
+if (!grepl(s12_name(s15_t3_p1), s15_c_t3, fixed = TRUE) ||
+    !grepl(s12_name(s15_t3_p2), s15_c_t3, fixed = TRUE)) {
+  fail("s15: opponent 'Team 03' card does not show its own drafted players")
+}
+if (grepl(s12_name("SYN-QB-001"), s15_c_t3, fixed = TRUE)) {
+  fail("s15: opponent 'Team 03' card shows the operator's QB -- cards not indexed per team")
+}
+if (grepl(s12_name(s15_t3_p1), s15_c_you, fixed = TRUE)) {
+  fail("s15: the operator card shows an opponent's player -- cards not indexed per team")
+}
+if (!grepl(s12_open, s15_c_t3, fixed = TRUE)) {
+  fail("s15: opponent 'Team 03' shows no '- aberto' for its unfilled starter slots")
+}
+if (.html_count(s15_c_t3, '<div class="roster-group">') != 3L) fail("s15: opponent card not 3 groups")
+if (!grepl('aria-label="Roster Team 03"', s15_c_t3, fixed = TRUE)) {
+  fail("s15: opponent card panel aria-label is not threaded per team (\"Roster Team 03\")")
+}
+## total .roster-row per card == sum(league$roster) (no bench surplus here).
+if (.html_count(s15_c_you, '<div class="roster-row') != sum(league$roster)) {
+  fail("s15: operator card .roster-row count != sum(league$roster): ",
+       .html_count(s15_c_you, '<div class="roster-row'))
+}
+
+## (15e) draft not started: 12 cards, every panel empty, one "- aberto" per open
+## starter/FLEX slot per card. The open count is derived from the league roster
+## (all slots but BENCH) so a config change fails with a clear count, not a
+## hardcoded mismatch.
+s15_open_per_card <- sum(league$roster) - league$roster[["BENCH"]]
+h15e <- .s15_render(.s12_state(character(0)))
+if (.html_count(h15e, 'class="team-roster-name"') != 12L) fail("s15: empty-draft panel not 12 cards")
+if (grepl('class="name"', h15e, fixed = TRUE)) fail("s15: empty-draft panel rendered a filled .name row")
+if (.html_count(h15e, sprintf('<span class="empty">%s</span>', s12_open)) !=
+    s15_open_per_card * 12L) {
+  fail("s15: empty-draft panel not ", s15_open_per_card, " '- aberto' placeholders per card x 12")
+}
+
+## (15f) nfl_team absent -> bare pos meta, never the string "NA".
+snap15_nt <- snap
+snap15_nt$players$nfl_team <- NULL
+h15nt <- .s15_render(.s12_state(c("SYN-QB-001"), snap15_nt), snap15_nt)
+if (grepl(">NA<", h15nt, fixed = TRUE) || grepl("NA</span>", h15nt, fixed = TRUE)) {
+  fail("s15: all-team panel emitted the string 'NA' for a missing nfl_team")
+}
+
+## (15g) www/styles.css absent at runtime -> the grid still assembles (same
+## swap-and-restore as the story 11 / 12 / 14 css-absent checks).
+s15_css_path <- file.path(tempdir(), "warroom-s15css", "draft.rds")
+unlink(dirname(s15_css_path), recursive = TRUE)
+save_state(.s12_state(c("SYN-QB-001", "SYN-RB-001")), s15_css_path)
+s15_css_bak <- file.path(tempdir(), "styles.css.s15bak")
+if (!file.copy("www/styles.css", s15_css_bak, overwrite = TRUE)) {
+  fail("s15: could not stage a backup of www/styles.css for the css-absent check")
+}
+s15_css_seen <- NULL
+s15_css_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s15_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s15_env))
+  srv <- s15_env$server
+  formals(srv)$snapshot   <- snap
+  formals(srv)$state_path <- s15_css_path
+  formals(srv)$config     <- cfg
+  shiny::testServer(srv, {
+    hh <- .strip_html(output$all_rosters_table)
+    s15_css_seen <<- grepl('<div class="all-rosters-grid">', hh, fixed = TRUE) &&
+      .html_count(hh, 'class="team-roster-name"') == 12L
+  })
+  isTRUE(s15_css_seen)
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s15_css_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) fail("s15: www/styles.css not restored after the css-absent check")
+if (!isTRUE(s15_css_ok)) fail("s15: all-team grid did not assemble with www/styles.css absent: ",
+                              attr(s15_css_ok, "msg"))
+
+## (15h) operator collapses the panel: the <details> is static ui, so a re-render
+## of output$all_rosters_table (a pick) never re-emits it -- the grid content is
+## all that changes. Verified structurally: the renderUI output has no <details>
+## (asserted in 15a); the static ui has <details ... open> (asserted in 15j).
+
+## (15i) user_team other than "Team 01" -- the "VOCE" tag lands on that card.
+s15_u      <- "Team 07"
+s15_sched  <- make_snake_schedule(league$teams, league$rounds)
+s15_u_slot <- which(team_order == s15_u)
+s15_u_ov   <- s15_sched$overall[s15_sched$slot == s15_u_slot]
+s15_m      <- s15_u_ov[2]
+s15_is_u   <- s15_sched$slot[seq_len(s15_m)] == s15_u_slot
+s15_upids  <- c("SYN-QB-001", "SYN-K-001")   # a K, to check opponent K-slot placement
+s15u_fill  <- setdiff(snap$players$player_id, s15_upids)
+s15_ids            <- character(s15_m)
+s15_ids[s15_is_u]  <- s15_upids
+s15_ids[!s15_is_u] <- s15u_fill[seq_len(sum(!s15_is_u))]
+st07 <- new_draft(snap, team_order, s15_u, league = league)
+st07$picks <- data.frame(
+  overall    = seq_len(s15_m),
+  player_id  = s15_ids,
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + seq_len(s15_m),
+  stringsAsFactors = FALSE)
+h15u <- .s15_render(st07)
+if (.html_count(h15u, 'class="team-roster-name"') != 12L) fail("s15: Team 07 fixture not 12 cards")
+if (.html_count(h15u, sprintf('<span class="team-roster-you">%s</span>', s15_you)) != 1L) {
+  fail("s15: Team 07 fixture: 'VOCE' tag not on exactly one card")
+}
+if (!grepl(s15_you, .s15_card(h15u, "Team 07"), fixed = TRUE)) {
+  fail("s15: 'VOCE' tag not on the 'Team 07' card when user_team = Team 07")
+}
+if (grepl(s15_you, .s15_card(h15u, "Team 01"), fixed = TRUE)) {
+  fail("s15: 'VOCE' tag wrongly on 'Team 01' when user_team = Team 07")
+}
+## the K/DST-into-dedicated-Titulares-slot rule (story 12) also runs for an
+## opponent card, not just the operator's.
+if (!.s12_filled(.s12_group(.s15_card(h15u, "Team 07"), "Titulares"), "K",
+                 s12_name("SYN-K-001"))) {
+  fail("s15: opponent 'Team 07' K not placed in its Titulares K slot")
+}
+s15u_prev <- 0L
+for (tm in team_order) {
+  pp <- regexpr(sprintf('<span class="team-roster-name">%s</span>', tm), h15u, fixed = TRUE)
+  if (pp < s15u_prev) fail("s15: Team 07 fixture cards not in team_order")
+  s15u_prev <- pp
+}
+
+## (15j) static UI + CSS + app.R analysis (Acceptance Criteria).
+ui15 <- as.character(htmltools::renderTags(ui)$html)
+if (!grepl('id="all_rosters_table"', ui15, fixed = TRUE)) fail("s15: rendered ui has no id=\"all_rosters_table\"")
+if (!grepl('<details class="all-rosters" open>', ui15, fixed = TRUE)) {
+  fail("s15: static ui lacks '<details class=\"all-rosters\" open>' (must be open by default, in the ui)")
+}
+p_det <- regexpr('<details class="all-rosters" open>', ui15, fixed = TRUE)
+p_uio <- regexpr('id="all_rosters_table"', ui15, fixed = TRUE)
+if (p_uio < p_det) fail("s15: uiOutput(\"all_rosters_table\") is not inside the <details>")
+if (!grepl("<h4>Rosters dos times</h4>", ui15, fixed = TRUE)) {
+  fail("s15: section heading h4(\"Rosters dos times\") missing")
+}
+for (id in c("status_strip", "draft_feedback", "recs_table", "recs_pos_filter", "recs_note",
+             "roster_table", "recent_picks_table", "available_table", "player_choice",
+             "draft_btn", "undo_btn", "pos_filter")) {
+  if (!grepl(id, ui15, fixed = TRUE)) fail("s15: rendered ui lost the story 8-14 id '", id, "'")
+}
+css15 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+css15_code <- gsub("(?s)/\\*.*?\\*/", "", css15, perl = TRUE)
+for (tok in c(".all-rosters", ".all-rosters-grid", ".team-roster", ".team-roster--you")) {
+  if (!grepl(tok, css15_code, fixed = TRUE)) fail("s15: styles.css missing '", tok, "'")
+}
+if (!grepl("@media (max-width: 900px)", css15_code, fixed = TRUE)) {
+  fail("s15: styles.css has no '@media (max-width: 900px)' rule for the narrow layout")
+}
+if (!grepl("grid-template-columns: 1fr", css15_code, fixed = TRUE)) {
+  fail("s15: styles.css narrow layout does not collapse the grid to one column")
+}
+## the open-grid height cap + internal scroll must apply at ANY width -- it must
+## exist BEFORE the @media block, not only inside it (round-1 amendment).
+s15_media_at <- regexpr("@media (max-width: 900px)", css15_code, fixed = TRUE)
+s15_cap_at   <- regexpr("\\.all-rosters\\[open\\][^{]*\\{[^}]*max-height[^}]*overflow-y:\\s*auto",
+                        css15_code, perl = TRUE)
+if (s15_cap_at < 0L) {
+  fail("s15: no '.all-rosters[open] .all-rosters-grid' rule with max-height + overflow-y: auto")
+}
+if (s15_cap_at > s15_media_at) {
+  fail("s15: the open-grid height cap is only inside @media -- a wide short viewport loses the scroll")
+}
+s15_you_rule <- regmatches(
+  css15_code, regexpr("\\.team-roster--you\\s*\\{[^}]*\\}", css15_code, perl = TRUE))
+if (length(s15_you_rule) != 1L) fail("s15: no '.team-roster--you { ... }' rule in styles.css")
+if (grepl("var\\(--focus\\)", s15_you_rule)) {
+  fail("s15: '.team-roster--you' uses var(--focus) -- blue is reserved for keyboard focus (DESIGN.md)")
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css15_code, perl = TRUE)) {
+  fail("s15: styles.css pulls a remote asset -- network on the live path")
+}
+app15 <- readLines("app.R", warn = FALSE)
+if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app15))) {
+  fail("s15: app.R introduced a forbidden JS / theming dependency")
+}
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app15))) fail("s15: app.R names an RNG symbol")
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.file\\(", app15))) {
+  fail("s15: app.R names a network / scrape symbol")
+}
+app15_code <- sub("#.*$", "", app15)
+if (any(grepl("^\\s*(roster_slots|recommend_players|derive_draft_view)\\s*<-", app15_code))) {
+  fail("s15: app.R redefines a core function")
+}
+if (sum(grepl("recommend_players\\(", app15_code)) != 1L) {
+  fail("s15: recommend_players() not called exactly once in app.R code")
+}
+if (sum(grepl("derive_draft_view\\(", app15_code)) != 1L) {
+  fail("s15: derive_draft_view() not called exactly once in app.R code")
+}
+if (sum(grepl("roster_slots\\(", app15_code)) > 1L) {
+  fail("s15: roster_slots() called more than once in app.R code (should be one call in roster_panel_ui)")
+}
+
+## (15k) the factored operator panel keeps the story-12 markup.
+s15_op_path <- file.path(tempdir(), "warroom-s15op", "draft.rds")
+unlink(dirname(s15_op_path), recursive = TRUE)
+save_state(.s12_state(c("SYN-QB-001")), s15_op_path)
+shiny::testServer(.s8_bake_server(snap, s15_op_path, cfg), {
+  s15_op <- .strip_html(output$roster_table)
+  if (!grepl('aria-label="Roster do operador"', s15_op, fixed = TRUE)) {
+    fail("s15: factored operator panel lost aria-label=\"Roster do operador\"")
+  }
+  if (!grepl('class="roster-panel"', s15_op, fixed = TRUE)) fail("s15: operator panel lost .roster-panel")
+})
+
+## (15l) legacy state with one blank team_order entry (passes .warroom_validate_state
+## -- only duplicates are caught): positional indexing keeps all 12 cards
+## assembling, and the blank name falls back to "Time <i>" rather than "NA".
+s15_blank <- .s12_state(c("SYN-QB-001"))
+s15_blank$team_order[5] <- ""
+h15b <- tryCatch(.s15_render(s15_blank),
+                 error = function(e) fail("s15: blank team_order crashed the panel: ",
+                                          conditionMessage(e)))
+if (.html_count(h15b, 'class="team-roster-name"') != 12L) {
+  fail("s15: blank team_order did not still render 12 cards")
+}
+if (!grepl('<span class="team-roster-name">Time 5</span>', h15b, fixed = TRUE)) {
+  fail("s15: blank team name did not fall back to 'Time 5': ", h15b)
+}
+if (grepl('<span class="team-roster-name">NA</span>', h15b, fixed = TRUE) ||
+    grepl('aria-label="Roster NA"', h15b, fixed = TRUE)) {
+  fail("s15: blank team name rendered the literal string 'NA'")
+}
+
+cat("story 15 offline checks OK -- all-team rosters panel renderUI over view()$rosters\n")
+
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript
 ## scripts/prepare.R` with no --force must refuse. The guard is placed above the
