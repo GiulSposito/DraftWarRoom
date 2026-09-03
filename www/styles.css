@@ -63,6 +63,13 @@
  * The operator's own team is marked by a textual "VOCE" tag plus an --ink
  * border -- never --focus, which is reserved for keyboard focus.
  *
+ * Story 16 replaces the selectize player picker with a textInput("player_query")
+ * plus a server-rendered .search-results list: one <button.search-result> per
+ * resolve_player() hit (name + pos + NFL team), row 1 (.search-result--active)
+ * is the row "Registrar" and Enter register. The .selectize-* rules below are
+ * now dead (no selectize on the page) and kept only as history. A single
+ * tags$head keydown script (app.R) wires Enter -> click on the active row.
+ *
  * Load order: Shiny appends this UI-level tags$head <link> after the registered
  * Bootstrap dependency CSS, so these rules win on equal specificity; the few
  * !important flags below are only where a Bootstrap rule is more specific.
@@ -489,6 +496,83 @@ button.candidate:focus-visible {
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink-muted);
+}
+
+/* --- search results list (story 16) ---------------------------------- */
+/* DESIGN.md §Components "Campo de busca + autocomplete": results immediately
+ * below the field, each row name + pos + NFL team. Name matching is
+ * resolve_player() server-side -- these rows are <button>s bound as Shiny
+ * action buttons (same pattern as button.candidate), no client-side matcher.
+ * The row Enter registers (.search-result--active) carries
+ * components.search-autocomplete.background (= --surface-raised) plus the
+ * global button:focus outline -- not duplicated here. UA button reset mirrors
+ * button.candidate. All values are DESIGN.md tokens. */
+.search-results {
+  display: flex;
+  flex-direction: column;
+  /* ~8 rows tall, then scroll -- a full result list must not push the
+   * Registrar / Undo buttons down during rapid drafting (same containment
+   * approach as .all-rosters[open] in story 15). */
+  max-height: 13rem;
+  overflow-y: auto;
+}
+
+.search-result {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  text-align: left;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search-result:last-child {
+  border-bottom: 0;
+}
+
+.search-result .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result .pos {
+  flex: none;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* hover / press / keyboard focus + the Enter-target row: raised ground
+ * (DESIGN.md candidate-active / search-autocomplete background). */
+.search-result:hover,
+.search-result:active,
+.search-result:focus-visible,
+.search-result--active {
+  background: var(--surface-raised);
+}
+
+/* no-match line -- readable content, not muted decoration (DESIGN.md §Colors:
+ * --ink on --surface). */
+.search-empty {
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
 }
 
 /* --- grouped roster panel (story 12, A4) ------------------------------- */

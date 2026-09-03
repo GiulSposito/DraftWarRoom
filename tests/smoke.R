@@ -1652,6 +1652,15 @@ if (!identical(names(formals(server)),
   if (length(m) == 1L && m[1] == -1L) 0L else length(m)
 }
 
+## story 16: the player picker is textInput("player_query") resolved through
+## resolve_player() against view()$available -- not a selectize of player_id.
+## A test that used to set input$player_choice <- <player_id> now types the
+## player's full name (an exact normalised match -> a unique hit) and fires the
+## same do_pick() path via input$draft_btn or input$search_row_1.
+.s16_query_for <- function(snapshot, pid) {
+  snapshot$players$player[match(pid, snapshot$players$player_id)]
+}
+
 ## (8a) No state/draft.rds -> new_draft() with default team_order / config
 ## user_team, saved immediately; status strip shows PICK 1 / Round 01.
 s8a_path <- file.path(tempdir(), "warroom-s8a", "draft.rds")
@@ -1704,16 +1713,17 @@ shiny::testServer(.s8_bake_server(snap, s8c_path, cfg), {
     fail("s8: server reactive recommendation values differ from recommend_players()")
   }
   pid <- view()$available$player_id[1]
-  session$setInputs(player_choice = pid)
+  session$setInputs(player_query = .s16_query_for(snap, pid))
   session$setInputs(draft_btn = 1)
   if (nrow(state()$picks) != 1L)          fail("s8: draft_btn did not record a pick")
   if (state()$picks$player_id[1] != pid)  fail("s8: draft_btn recorded the wrong player")
   if (pid %in% view()$available$player_id) fail("s8: drafted player still shows as available")
 
-  ## record_pick() rejects a re-draft of the same player -> the draft_feedback
-  ## region shows the error (story 13), state unchanged (no crash of the
-  ## reactive session).
-  session$setInputs(player_choice = pid)
+  ## story 16: once a player is drafted the search box no longer surfaces them
+  ## (resolve_player() returns "none"), so a "Registrar" with that same query
+  ## takes the empty-selection branch -- no pick, no crash of the reactive
+  ## session (the already-drafted branch itself is covered in s13c / s14).
+  session$setInputs(player_query = .s16_query_for(snap, pid))
   session$setInputs(draft_btn = 2)
   if (nrow(state()$picks) != 1L) fail("s8: rejected re-draft changed the pick count")
 })
@@ -1732,7 +1742,7 @@ shiny::testServer(.s8_bake_server(snap, s8d_path, cfg), {
   }
 
   pid <- view()$available$player_id[1]
-  session$setInputs(player_choice = pid)
+  session$setInputs(player_query = .s16_query_for(snap, pid))
   session$setInputs(draft_btn = 1)
   if (nrow(state()$picks) != 1L) fail("s8: setup pick before undo failed")
 
@@ -1979,9 +1989,11 @@ if (grepl("color:#b00|color: #b00", ui9)) {
 }
 for (id in c("status_strip", "recs_note", "recs_table", "roster_table",
              "recent_picks_table", "available_table",
-             "player_choice", "draft_btn", "undo_btn", "pos_filter")) {
+             "player_query", "search_results", "draft_btn", "undo_btn",
+             "pos_filter")) {
   if (!grepl(id, ui9, fixed = TRUE)) fail("s9: rendered ui lost the story-8 id '", id, "'")
 }
+if (grepl("player_choice", ui9, fixed = TRUE)) fail("s9: rendered ui still carries player_choice")
 
 ## Matrix row 3: styles.css absent at runtime -> the page still assembles, no
 ## server error. The stylesheet is referenced by href only; nothing on the R
@@ -2036,8 +2048,8 @@ if (p_strip < 0L || p_row < 0L || p_strip > p_row) {
   fail("s10: status_strip is not a child of .container-fluid ahead of any .row")
 }
 for (id in c("recs_note", "recs_table", "roster_table", "recent_picks_table",
-             "available_table", "player_choice", "draft_btn", "undo_btn",
-             "pos_filter")) {
+             "available_table", "player_query", "search_results", "draft_btn",
+             "undo_btn", "pos_filter")) {
   if (!grepl(id, ui10, fixed = TRUE)) fail("s10: rendered ui lost the story-8 id '", id, "'")
 }
 
@@ -2174,7 +2186,7 @@ for (sc in list(list(k = 0L,   tag = "new"),
 ## Static analysis (same spirit as 8h): the strip added no network / RNG symbol
 ## and no forbidden theming / JS dependency to app.R.
 app10 <- readLines("app.R", warn = FALSE)
-if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue",
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue",
               app10))) {
   fail("s10: app.R introduced a forbidden JS / theming dependency")
 }
@@ -2402,8 +2414,8 @@ if (grepl("<table", substr(ui11, p_rt, p_rt + 200L), fixed = TRUE)) {
   fail("s11: recs_table renders a static <table>")
 }
 for (id in c("status_strip", "recs_note", "roster_table", "recent_picks_table",
-             "available_table", "player_choice", "draft_btn", "undo_btn",
-             "pos_filter")) {
+             "available_table", "player_query", "search_results", "draft_btn",
+             "undo_btn", "pos_filter")) {
   if (!grepl(id, ui11, fixed = TRUE)) fail("s11: rendered ui lost the story 8-10 id '", id, "'")
 }
 ## P7: the radio group has a real (visually-hidden) accessible name.
@@ -2427,7 +2439,7 @@ if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
   fail("s11: styles.css pulls a remote asset -- network on the live path")
 }
 app11 <- readLines("app.R", warn = FALSE)
-if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app11))) {
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue", app11))) {
   fail("s11: app.R introduced a forbidden JS / theming dependency")
 }
 if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app11))) fail("s11: app.R names an RNG symbol")
@@ -2705,8 +2717,8 @@ if (grepl("<table", substr(ui12, p_rt12, p_rt12 + 200L), fixed = TRUE)) {
   fail("s12: roster_table renders a static <table>")
 }
 for (id in c("status_strip", "recs_note", "recs_table", "recs_pos_filter",
-             "recent_picks_table", "available_table", "player_choice",
-             "draft_btn", "undo_btn", "pos_filter")) {
+             "recent_picks_table", "available_table", "player_query",
+             "search_results", "draft_btn", "undo_btn", "pos_filter")) {
   if (!grepl(id, ui12, fixed = TRUE)) fail("s12: rendered ui lost the story 8-11 id '", id, "'")
 }
 css12 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
@@ -2725,7 +2737,7 @@ if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
   fail("s12: styles.css pulls a remote asset -- network on the live path")
 }
 app12 <- readLines("app.R", warn = FALSE)
-if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app12))) {
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue", app12))) {
   fail("s12: app.R introduced a forbidden JS / theming dependency")
 }
 if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app12))) fail("s12: app.R names an RNG symbol")
@@ -2765,7 +2777,7 @@ unlink(dirname(s13a_path), recursive = TRUE)
 shiny::testServer(.s8_bake_server(snap, s13a_path, cfg), {
   pid  <- view()$available$player_id[1]
   name <- snap$players$player[match(pid, snap$players$player_id)]
-  session$setInputs(player_choice = pid)
+  session$setInputs(player_query = name)
   session$setInputs(draft_btn = 1)
   h <- .s13_fb(output)
   if (!grepl("draft-feedback--ok", h, fixed = TRUE)) {
@@ -2789,7 +2801,7 @@ shiny::testServer(.s8_bake_server(snap, s13a2_path, cfg), {
     fail("s13a2: setup error not shown")
   }
   pid <- view()$available$player_id[1]
-  session$setInputs(player_choice = pid)
+  session$setInputs(player_query = .s16_query_for(snap, pid))
   session$setInputs(draft_btn = 2)
   h <- .s13_fb(output)
   if (!grepl("draft-feedback--ok", h, fixed = TRUE) ||
@@ -2803,7 +2815,7 @@ s13b_path <- file.path(tempdir(), "warroom-s13b", "draft.rds")
 unlink(dirname(s13b_path), recursive = TRUE)
 shiny::testServer(.s8_bake_server(snap, s13b_path, cfg), {
   before <- nrow(state()$picks)
-  session$setInputs(draft_btn = 1)   # player_choice still NULL
+  session$setInputs(draft_btn = 1)   # player_query still NULL
   h <- .s13_fb(output)
   if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
       !grepl(s13_empty, h, fixed = TRUE)) {
@@ -2818,16 +2830,18 @@ s13c_path <- file.path(tempdir(), "warroom-s13c", "draft.rds")
 unlink(dirname(s13c_path), recursive = TRUE)
 shiny::testServer(.s8_bake_server(snap, s13c_path, cfg), {
   pid <- view()$available$player_id[1]
-  session$setInputs(player_choice = pid)
+  session$setInputs(player_query = .s16_query_for(snap, pid))
   session$setInputs(draft_btn = 1)
   n      <- state()$picks$overall[match(pid, state()$picks$player_id)]
   after1 <- nrow(state()$picks)
-  session$setInputs(player_choice = pid)
-  session$setInputs(draft_btn = 2)
-  h <- .s13_fb(output)
-  if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
-      !grepl(s13_already(n), h, fixed = TRUE)) {
-    fail("s13c: re-draft did not render 'Ja escolhido no pick N': ", h)
+  ## story 16: typing a drafted player's name yields resolve_player() "none", so
+  ## the already-drafted branch of do_pick() is exercised directly -- the exact
+  ## function a "Registrar" / search-result click ends in (same approach as s14d,
+  ## which reads feedback() rather than the rendered region after a bare call).
+  do_pick(pid, "unused")
+  fb <- feedback()
+  if (!identical(fb$kind, "error") || !grepl(s13_already(n), fb$text, fixed = TRUE)) {
+    fail("s13c: re-draft did not produce the 'Ja escolhido no pick N' error: ", fb$text)
   }
   if (nrow(state()$picks) != after1) fail("s13c: rejected re-draft changed the pick count")
 })
@@ -2838,7 +2852,7 @@ s13d_path <- file.path(tempdir(), "warroom-s13d", "draft.rds")
 unlink(dirname(s13d_path), recursive = TRUE)
 shiny::testServer(.s8_bake_server(snap, s13d_path, cfg), {
   pid <- view()$available$player_id[1]
-  session$setInputs(player_choice = pid)
+  session$setInputs(player_query = .s16_query_for(snap, pid))
   session$setInputs(draft_btn = 1)
   n <- state()$picks$overall[nrow(state()$picks)]
   session$setInputs(undo_btn = 1)
@@ -2867,22 +2881,24 @@ shiny::testServer(.s8_bake_server(snap, s13e_path, cfg), {
   if (nrow(state()$picks) != 0L) fail("s13e: undo on empty draft changed state()")
 })
 
-## (13e2) Draft cheio / id invalido: record_pick() raises an error that is NOT
-## "already been drafted" -> the else branch, "Pick nao registrado: <msg>",
-## state intact.
+## (13e2) No-match query -> resolve_player() "none" -> do_pick(NA) -> the shared
+## empty-selection branch, state intact. Story 16: an invalid player_id can no
+## longer reach record_pick() (the search box only ever yields available
+## players); do_pick's generic "Pick nao registrado:" else branch is still
+## covered by the save_state() failure in 13e3.
 s13e2_path <- file.path(tempdir(), "warroom-s13e2", "draft.rds")
 unlink(dirname(s13e2_path), recursive = TRUE)
 shiny::testServer(.s8_bake_server(snap, s13e2_path, cfg), {
   before <- nrow(state()$picks)
-  session$setInputs(player_choice = "SYN-NOT-A-REAL-ID")
+  session$setInputs(player_query = "zzzz")
   session$setInputs(draft_btn = 1)
   h <- .s13_fb(output)
   if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
-      !grepl("Pick n\u00e3o registrado:", h, fixed = TRUE)) {
-    fail("s13e2: unknown-id error did not render 'Pick nao registrado:': ", h)
+      !grepl(s13_empty, h, fixed = TRUE)) {
+    fail("s13e2: no-match query did not render the empty-selection error: ", h)
   }
-  if (grepl("draft-feedback--ok", h, fixed = TRUE)) fail("s13e2: unknown id rendered an ok line")
-  if (nrow(state()$picks) != before) fail("s13e2: rejected unknown id changed state()")
+  if (grepl("draft-feedback--ok", h, fixed = TRUE)) fail("s13e2: no-match query rendered an ok line")
+  if (nrow(state()$picks) != before) fail("s13e2: no-match query changed state()")
 })
 
 ## (13e3) Falha de save_state(): commit_state() raises inside save_state() ->
@@ -2906,7 +2922,7 @@ if (isTRUE(suppressWarnings(file.create(s13e3_probe)))) {
     shiny::testServer(.s8_bake_server(snap, s13e3_path, cfg), {
       before <- nrow(state()$picks)
       pid <- view()$available$player_id[1]
-      session$setInputs(player_choice = pid)
+      session$setInputs(player_query = .s16_query_for(snap, pid))
       session$setInputs(draft_btn = 1)
       h <- .s13_fb(output)
       if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
@@ -2976,7 +2992,7 @@ s13h_ok <- tryCatch({
   formals(srv)$config     <- cfg
   shiny::testServer(srv, {
     pid <- view()$available$player_id[1]
-    session$setInputs(player_choice = pid)
+    session$setInputs(player_query = .s16_query_for(snap, pid))
     session$setInputs(draft_btn = 1)
     hh <- .strip_html(output$draft_feedback)
     s13h_seen <<- grepl("draft-feedback--ok", hh, fixed = TRUE)
@@ -3002,7 +3018,8 @@ if (p_ss13 < 0L || p_df13 < 0L || p_df13 < p_ss13) {
 }
 for (id in c("status_strip", "recs_note", "recs_table", "recs_pos_filter",
              "roster_table", "recent_picks_table", "available_table",
-             "player_choice", "draft_btn", "undo_btn", "pos_filter")) {
+             "player_query", "search_results", "draft_btn", "undo_btn",
+             "pos_filter")) {
   if (!grepl(id, ui13, fixed = TRUE)) fail("s13: rendered ui lost the story 8-12 id '", id, "'")
 }
 app13 <- readLines("app.R", warn = FALSE, encoding = "UTF-8")
@@ -3018,7 +3035,11 @@ for (s in c("Recomendacoes", "Disponiveis", "disponiveis por posicao",
             "jogador disponivel...", 'actionButton("draft_btn", "Draft"')) {
   if (grepl(s, app13_all, fixed = TRUE)) fail("s13: app.R still carries the un-accented '", s, "'")
 }
-if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app13))) {
+## story 16 (checkpoint Option A) allows exactly ONE tags$script in app.R -- the
+## minimal Enter-key keydown handler. shinyjs / bslib / sass / includeCSS /
+## Shiny.setInputValue stay vetoed; the single-script + clean-body assertion
+## lives in the story 16 block.
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue", app13))) {
   fail("s13: app.R introduced a forbidden JS / theming dependency")
 }
 if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app13))) fail("s13: app.R names an RNG symbol")
@@ -3181,7 +3202,7 @@ s14d_path <- file.path(tempdir(), "warroom-s14d", "draft.rds")
 unlink(dirname(s14d_path), recursive = TRUE)
 save_state(mid14, s14d_path)
 shiny::testServer(.s8_bake_server(snap, s14d_path, cfg), {
-  session$setInputs(player_choice = "")
+  session$setInputs(player_query = "")
   session$setInputs(draft_btn = 1)
   fb <- feedback()
   if (!identical(fb$kind, "error") ||
@@ -3230,7 +3251,7 @@ if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
 
 ## (14g) static app.R analysis: single pick path, adapter stays thin.
 app14 <- readLines("app.R", warn = FALSE)
-if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app14))) {
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue", app14))) {
   fail("s14: app.R introduced a forbidden JS / theming dependency")
 }
 if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app14))) fail("s14: app.R names an RNG symbol")
@@ -3529,8 +3550,8 @@ if (!grepl("<h4>Rosters dos times</h4>", ui15, fixed = TRUE)) {
   fail("s15: section heading h4(\"Rosters dos times\") missing")
 }
 for (id in c("status_strip", "draft_feedback", "recs_table", "recs_pos_filter", "recs_note",
-             "roster_table", "recent_picks_table", "available_table", "player_choice",
-             "draft_btn", "undo_btn", "pos_filter")) {
+             "roster_table", "recent_picks_table", "available_table", "player_query",
+             "search_results", "draft_btn", "undo_btn", "pos_filter")) {
   if (!grepl(id, ui15, fixed = TRUE)) fail("s15: rendered ui lost the story 8-14 id '", id, "'")
 }
 css15 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
@@ -3566,7 +3587,7 @@ if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
   fail("s15: styles.css pulls a remote asset -- network on the live path")
 }
 app15 <- readLines("app.R", warn = FALSE)
-if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app15))) {
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue", app15))) {
   fail("s15: app.R introduced a forbidden JS / theming dependency")
 }
 if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app15))) fail("s15: app.R names an RNG symbol")
@@ -3619,6 +3640,316 @@ if (grepl('<span class="team-roster-name">NA</span>', h15b, fixed = TRUE) ||
 }
 
 cat("story 15 offline checks OK -- all-team rosters panel renderUI over view()$rosters\n")
+
+## --- story 16: search as a server-rendered combobox (offline) --------------
+## app.R swaps selectizeInput("player_choice") for textInput("player_query") +
+## uiOutput("search_results"). A keystroke recomputes only search_hits()
+## (resolve_player() over view()$available + the full snapshot table) -- never
+## recs() / recommend_players(). Each result row is a <button id="search_row_k">
+## bound as a Shiny action button; row 1 carries .search-result--active and is
+## what "Registrar" (and the tags$head Enter keydown script) register, through
+## the SAME do_pick() path. Reuses `fail`, `snap`, `team_order`, `cfg`,
+## `league`, `.s8_bake_server`, `.strip_html`, `.html_count`, `.s16_query_for`.
+
+.s16_res <- function(output) .strip_html(output$search_results)
+
+## on-turn mid-draft fixture: 23 picks -> overall 24 belongs to Team 01 (user).
+s16_mid <- new_draft(snap, team_order, "Team 01", league = league)
+for (i in 1:23) s16_mid <- record_pick(s16_mid, snap$players$player_id[i], snap)
+
+## (16a) unique query, on the clock: row 1 is that player; a search_row_1 click
+## records it via record_pick(); state grows by 1; ok feedback; state saved.
+s16a_path <- file.path(tempdir(), "warroom-s16a", "draft.rds")
+unlink(dirname(s16a_path), recursive = TRUE)
+save_state(s16_mid, s16a_path)
+shiny::testServer(.s8_bake_server(snap, s16a_path, cfg), {
+  pid  <- view()$available$player_id[1]
+  name <- .s16_query_for(snap, pid)
+  session$setInputs(player_query = name)
+  if (!identical(search_hits()$status, "unique")) fail("s16a: full name did not resolve uniquely")
+  if (search_hits()$players$player_id[1] != pid) fail("s16a: hit 1 is not the queried player")
+  h <- .s16_res(output)
+  if (!grepl("<button", h, fixed = TRUE)) fail("s16a: search results are not <button>: ", h)
+  if (!grepl('id="search_row_1"', h, fixed = TRUE)) fail("s16a: no id=\"search_row_1\": ", h)
+  if (!grepl('class="search-result action-button', h, fixed = TRUE)) {
+    fail("s16a: row class does not lead with 'search-result action-button': ", h)
+  }
+  if (!grepl("search-result--active", h, fixed = TRUE)) fail("s16a: row 1 not --active: ", h)
+  if (!grepl(sprintf('aria-label="Registrar %s"', name), h, fixed = TRUE)) {
+    fail("s16a: row 1 missing the 'Registrar <player>' aria-label: ", h)
+  }
+  before <- nrow(state()$picks)
+  session$setInputs(search_row_1 = 1)
+  if (nrow(state()$picks) != before + 1L) fail("s16a: search_row_1 click did not record a pick")
+  if (state()$picks$player_id[nrow(state()$picks)] != pid) fail("s16a: click recorded the wrong player")
+  fb <- feedback()
+  if (!identical(fb$kind, "ok") ||
+      !grepl(sprintf("Registrado: %s", name), fb$text, fixed = TRUE)) {
+    fail("s16a: click feedback is not the ok 'Registrado:' line: ", fb$text)
+  }
+})
+d16a <- load_state(s16a_path)
+if (nrow(d16a$picks) != 24L) fail("s16a: click-registered pick not persisted to disk")
+
+## (16b) "Registrar" with a 1-hit query -> same do_pick(); registers hit 1.
+s16b_path <- file.path(tempdir(), "warroom-s16b", "draft.rds")
+unlink(dirname(s16b_path), recursive = TRUE)
+save_state(s16_mid, s16b_path)
+shiny::testServer(.s8_bake_server(snap, s16b_path, cfg), {
+  pid <- view()$available$player_id[2]
+  session$setInputs(player_query = .s16_query_for(snap, pid))
+  before <- nrow(state()$picks)
+  session$setInputs(draft_btn = 1)
+  if (nrow(state()$picks) != before + 1L) fail("s16b: Registrar did not record the single hit")
+  if (state()$picks$player_id[nrow(state()$picks)] != pid) fail("s16b: Registrar recorded the wrong player")
+})
+
+## (16c) ambiguous query -> multiple rows, first --active, no pick until an
+## action, and a keystroke does NOT recompute recs(); results are capped at
+## search_result_cap (8 -- one constant, checked against the observer count in 16h).
+s16c_path <- file.path(tempdir(), "warroom-s16c", "draft.rds")
+unlink(dirname(s16c_path), recursive = TRUE)
+save_state(s16_mid, s16c_path)
+shiny::testServer(.s8_bake_server(snap, s16c_path, cfg), {
+  recs_before <- recs()
+  before      <- nrow(state()$picks)
+  session$setInputs(player_query = "wr synthetic")
+  if (!identical(search_hits()$status, "ambiguous")) fail("s16c: 'wr synthetic' did not resolve ambiguous")
+  h <- .s16_res(output)
+  if (.html_count(h, "search-result--active") != 1L) fail("s16c: not exactly one --active row: ", h)
+  if (.html_count(h, 'id="search_row_') != 8L) fail("s16c: results not capped at 8 rows: ", h)
+  if (nrow(state()$picks) != before) fail("s16c: an ambiguous query recorded a pick")
+  if (!identical(recs(), recs_before)) fail("s16c: a keystroke recomputed recs()")
+})
+
+## (16d) no-result query -> the .search-empty line, state intact.
+s16d_path <- file.path(tempdir(), "warroom-s16d", "draft.rds")
+unlink(dirname(s16d_path), recursive = TRUE)
+save_state(s16_mid, s16d_path)
+shiny::testServer(.s8_bake_server(snap, s16d_path, cfg), {
+  before <- nrow(state()$picks)
+  session$setInputs(player_query = "zzzz")
+  h <- .s16_res(output)
+  if (!grepl('class="search-empty"', h, fixed = TRUE)) fail("s16d: no .search-empty line: ", h)
+  if (!grepl("Nenhum jogador dispon\u00edvel corresponde", h, fixed = TRUE)) {
+    fail("s16d: .search-empty text is not the EXPERIENCE.md string: ", h)
+  }
+  if (grepl("<button", h, fixed = TRUE)) fail("s16d: no-result query still rendered a row")
+  if (nrow(state()$picks) != before) fail("s16d: no-result query changed state")
+})
+
+## (16e) empty query -- and a whitespace-only query -- both give an empty
+## .search-results container (no rows, no .search-empty line): the trimws() in
+## the search_hits reactive and the renderUI agree.
+s16e_path <- file.path(tempdir(), "warroom-s16e", "draft.rds")
+unlink(dirname(s16e_path), recursive = TRUE)
+save_state(s16_mid, s16e_path)
+shiny::testServer(.s8_bake_server(snap, s16e_path, cfg), {
+  for (blank in c("", "   ", "\t ")) {
+    session$setInputs(player_query = blank)
+    h <- .s16_res(output)
+    if (!grepl('class="search-results"', h, fixed = TRUE)) {
+      fail("s16e: blank query [", blank, "] lost the container: ", h)
+    }
+    if (grepl("<button", h, fixed = TRUE)) fail("s16e: blank query [", blank, "] rendered rows: ", h)
+    if (grepl("search-empty", h, fixed = TRUE)) {
+      fail("s16e: blank query [", blank, "] rendered the no-result line: ", h)
+    }
+  }
+})
+
+## (16f) "Registrar" with an empty query -> empty-selection error, state intact.
+s16f_path <- file.path(tempdir(), "warroom-s16f", "draft.rds")
+unlink(dirname(s16f_path), recursive = TRUE)
+save_state(s16_mid, s16f_path)
+shiny::testServer(.s8_bake_server(snap, s16f_path, cfg), {
+  before <- nrow(state()$picks)
+  session$setInputs(player_query = "")
+  session$setInputs(draft_btn = 1)
+  fb <- feedback()
+  if (!identical(fb$kind, "error") ||
+      !grepl("Selecione um jogador na busca antes de registrar.", fb$text, fixed = TRUE)) {
+    fail("s16f: Registrar with an empty query did not raise the empty-selection error: ", fb$text)
+  }
+  if (nrow(state()$picks) != before) fail("s16f: empty-query Registrar changed state")
+})
+
+## (16g) a search_row_k click past the hit count -> do_pick(NA): the
+## caller-specific "Resultado de busca indisponivel" error, state intact.
+s16g_path <- file.path(tempdir(), "warroom-s16g", "draft.rds")
+unlink(dirname(s16g_path), recursive = TRUE)
+save_state(s16_mid, s16g_path)
+shiny::testServer(.s8_bake_server(snap, s16g_path, cfg), {
+  pid <- view()$available$player_id[1]
+  session$setInputs(player_query = .s16_query_for(snap, pid))
+  if (nrow(search_hits()$players) != 1L) fail("s16g: precondition -- query is not a single hit")
+  before <- nrow(state()$picks)
+  session$setInputs(search_row_5 = 1)
+  if (nrow(state()$picks) != before) fail("s16g: out-of-range search row click changed state")
+  fb <- feedback()
+  if (!identical(fb$kind, "error") ||
+      !grepl("Resultado de busca indispon\u00edvel", fb$text, fixed = TRUE)) {
+    fail("s16g: out-of-range click did not set the 'Resultado de busca indisponivel' error: ", fb$text)
+  }
+})
+
+## (16g2) in-range boundary: an ambiguous query (>4 hits) + a search_row_4 click
+## registers the 4th hit -- exercises the k <= nrow(h) guard from the in-range
+## side, not only the out-of-range search_row_5 case above.
+s16g2_path <- file.path(tempdir(), "warroom-s16g2", "draft.rds")
+unlink(dirname(s16g2_path), recursive = TRUE)
+save_state(s16_mid, s16g2_path)
+shiny::testServer(.s8_bake_server(snap, s16g2_path, cfg), {
+  session$setInputs(player_query = "wr synthetic")
+  hits4 <- search_hits()$players$player_id
+  if (length(hits4) < 4L) fail("s16g2: precondition -- 'wr synthetic' has < 4 hits")
+  before <- nrow(state()$picks)
+  session$setInputs(search_row_4 = 1)
+  if (nrow(state()$picks) != before + 1L) fail("s16g2: search_row_4 click did not record a pick")
+  if (state()$picks$player_id[nrow(state()$picks)] != hits4[4]) {
+    fail("s16g2: search_row_4 registered the wrong hit (observer<->hit index mismatch?)")
+  }
+})
+
+## (16h) static UI + app.R + the Enter script (Acceptance Criteria).
+ui16 <- as.character(htmltools::renderTags(ui)$html)
+for (id in c("status_strip", "draft_feedback", "recs_note", "recs_table", "recs_pos_filter",
+             "roster_table", "recent_picks_table", "available_table",
+             "player_query", "search_results", "draft_btn", "undo_btn", "pos_filter")) {
+  if (!grepl(id, ui16, fixed = TRUE)) fail("s16: rendered ui lost the id '", id, "'")
+}
+if (grepl("player_choice", ui16, fixed = TRUE)) fail("s16: rendered ui still carries player_choice")
+if (grepl("buscar jogador dispon\u00edvel...", ui16, fixed = TRUE) == FALSE) {
+  fail("s16: the textInput placeholder lost the accented 'buscar jogador disponivel...'")
+}
+app16 <- readLines("app.R", warn = FALSE, encoding = "UTF-8")
+if (any(grepl("selectizeInput|updateSelectizeInput|player_choice", app16))) {
+  fail("s16: app.R still names selectizeInput / updateSelectizeInput / player_choice")
+}
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue", app16))) {
+  fail("s16: app.R introduced a forbidden JS / theming dependency")
+}
+## Enter wiring (checkpoint Option A): exactly one tags$script, and nothing in
+## app.R touches Shiny.* or the network -- the handler is plain DOM keydown.
+i16_script <- grep("tags\\$script", app16)
+if (length(i16_script) != 1L) {
+  fail("s16: app.R must contain exactly one tags$script (the Enter keydown handler)")
+}
+if (any(grepl("Shiny\\.", app16))) fail("s16: app.R references Shiny.* -- the Enter script must be plain DOM")
+if (any(grepl("fetch\\(|XMLHttpRequest|WebSocket|http[s]?://", app16))) {
+  fail("s16: app.R script names a network symbol")
+}
+## Pin the Enter-script bridge: the handler must literally name each thing it
+## couples -- the field id, both selectors it clicks, the DOM calls, and the two
+## IME/auto-repeat guards. A rename on either side (or story 22 rewriting the
+## Enter branch away) trips this.
+s16_script_body <- paste(app16[i16_script:min(length(app16), i16_script + 12L)],
+                         collapse = "\n")
+for (tok in c("player_query", ".search-result--active", ".search-result",
+              ".click(", "preventDefault", "isComposing", "e.repeat")) {
+  if (!grepl(tok, s16_script_body, fixed = TRUE)) {
+    fail("s16: the Enter keydown script lost the bridge token '", tok, "'")
+  }
+}
+## Field-value reset: shiny::testServer does not reflect updateTextInput back
+## into input$player_query, so this is pinned by source position instead -- the
+## clear must sit in do_pick's success branch, right after commit_state(st) and
+## right before the ok feedback(). (Story ## Verification carries the matching
+## manual check.)
+i16_clear <- grep('updateTextInput(session, "player_query", value = "")', app16, fixed = TRUE)
+if (length(i16_clear) != 1L) {
+  fail("s16: expected exactly one updateTextInput(session, \"player_query\", ...) call")
+}
+if (!any(grepl("commit_state(st)", app16[max(1L, i16_clear - 3L):(i16_clear - 1L)], fixed = TRUE))) {
+  fail("s16: the player_query clear is not immediately after commit_state(st) in do_pick()")
+}
+if (!any(grepl('feedback(list(kind = "ok"',
+               app16[(i16_clear + 1L):min(length(app16), i16_clear + 3L)], fixed = TRUE))) {
+  fail("s16: the player_query clear is not immediately before the ok feedback() in do_pick()")
+}
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app16))) fail("s16: app.R names an RNG symbol")
+app16_code <- sub("#.*$", "", app16)
+for (fn in c("resolve_player", "record_pick", "undo_pick", "recommend_players")) {
+  if (sum(grepl(sprintf("%s\\(", fn), app16_code)) != 1L) {
+    fail(sprintf("s16: %s() not called exactly once in app.R code", fn))
+  }
+}
+## One result-cap constant: defined once, read by both the observer loop
+## (seq_len) and the render cap (min) so they cannot drift from 8.
+if (!any(grepl("search_result_cap <- 8L", app16_code, fixed = TRUE))) {
+  fail("s16: app.R does not define the single result cap 'search_result_cap <- 8L'")
+}
+s16_cap_in_seq <- any(grepl("seq_len(search_result_cap)", app16_code, fixed = TRUE))
+s16_cap_in_min <- any(grepl("min(search_result_cap", app16_code, fixed = TRUE))
+if (!s16_cap_in_seq || !s16_cap_in_min) {
+  fail("s16: search_result_cap is not reused by both the observer loop and the render cap")
+}
+css16 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+css16_code <- gsub("(?s)/\\*.*?\\*/", "", css16, perl = TRUE)
+for (tok in c(".search-results", ".search-result", ".search-result--active", ".search-empty")) {
+  if (!grepl(tok, css16_code, fixed = TRUE)) fail("s16: styles.css missing '", tok, "'")
+}
+s16_active_rule <- regmatches(css16_code, regexpr(
+  "\\.search-result--active[^{]*\\{[^}]*\\}", css16_code, perl = TRUE))
+if (!length(s16_active_rule) || !grepl("var\\(--surface-raised\\)", paste(s16_active_rule, collapse = ""))) {
+  fail("s16: '.search-result--active' background is not var(--surface-raised)")
+}
+## the results list is height-capped with an internal scroll so a full list does
+## not push the Registrar / Undo buttons down (same containment as story 15).
+s16_list_rule <- regmatches(css16_code, regexpr(
+  "\\.search-results\\s*\\{[^}]*\\}", css16_code, perl = TRUE))
+if (!length(s16_list_rule) ||
+    !grepl("max-height", s16_list_rule, fixed = TRUE) ||
+    !grepl("overflow-y", s16_list_rule, fixed = TRUE)) {
+  fail("s16: '.search-results' has no max-height + overflow-y cap: ", s16_list_rule)
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css16_code, perl = TRUE)) {
+  fail("s16: styles.css pulls a remote asset -- network on the live path")
+}
+
+## (16i) www/styles.css absent at runtime: the results list still assembles AND
+## a search_row_1 click still registers. Same swap-and-restore as story 9 / 14.
+s16css_path <- file.path(tempdir(), "warroom-s16css", "draft.rds")
+unlink(dirname(s16css_path), recursive = TRUE)
+save_state(s16_mid, s16css_path)
+s16_css_bak <- file.path(tempdir(), "styles.css.s16bak")
+if (!file.copy("www/styles.css", s16_css_bak, overwrite = TRUE)) {
+  fail("s16: could not stage a backup of www/styles.css for the css-absent check")
+}
+s16_css_seen <- NULL
+s16_css_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s16_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s16_env))
+  srv <- s16_env$server
+  formals(srv)$snapshot   <- snap
+  formals(srv)$state_path <- s16css_path
+  formals(srv)$config     <- cfg
+  shiny::testServer(srv, {
+    pid <- view()$available$player_id[1]
+    session$setInputs(player_query = .s16_query_for(snap, pid))
+    hh <- .strip_html(output$search_results)
+    b0 <- nrow(state()$picks)
+    session$setInputs(search_row_1 = 1)
+    s16_css_seen <<- grepl("<button", hh, fixed = TRUE) &&
+      nrow(state()$picks) == b0 + 1L &&
+      state()$picks$player_id[nrow(state()$picks)] == pid
+  })
+  isTRUE(s16_css_seen)
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s16_css_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) fail("s16: www/styles.css not restored after the css-absent check")
+if (!isTRUE(s16_css_ok)) {
+  fail("s16: results list / click did not work with www/styles.css absent: ",
+       attr(s16_css_ok, "msg"))
+}
+
+cat("story 16 offline checks OK -- textInput + resolve_player() search results + click/Enter to pick\n")
 
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript

@@ -37,7 +37,22 @@ library(shiny)
 ui <- fluidPage(
   tags$head(
     tags$title("Draft War Room"),
-    tags$link(rel = "stylesheet", href = "styles.css")
+    tags$link(rel = "stylesheet", href = "styles.css"),
+    ## Enter in the search field registers the highlighted result (story 16,
+    ## checkpoint Option A). Pure DOM keydown -- no custom input value, no input
+    ## binding, no JS helper package. The <button> click goes through the same
+    ## action-button binding a mouse click uses, so do_pick() stays the single
+    ## pick path. Story 22 (C1) expands this same script with arrow-key nav.
+    tags$script(HTML(paste(
+      "document.addEventListener('keydown', function (e) {",
+      "  if (e.isComposing || e.keyCode === 229 || e.repeat) return;",
+      "  if (e.key !== 'Enter') return;",
+      "  var q = document.getElementById('player_query');",
+      "  if (!q || e.target !== q) return;",
+      "  var r = document.querySelector('.search-result--active') || document.querySelector('.search-result');",
+      "  if (r) { e.preventDefault(); r.click(); }",
+      "});",
+      sep = "\n")))
   ),
   div(class = "app-header", "Draft War Room"),
 
@@ -55,9 +70,9 @@ ui <- fluidPage(
 
   fluidRow(
     column(5,
-      selectizeInput("player_choice", "Jogador",
-                     choices = NULL,
-                     options = list(placeholder = "buscar jogador disponível...")),
+      textInput("player_query", "Jogador",
+                placeholder = "buscar jogador disponível..."),
+      uiOutput("search_results"),
       actionButton("draft_btn", "Registrar", class = "btn-primary"),
       actionButton("undo_btn", "Undo")
     ),
@@ -188,26 +203,26 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     r
   })
 
-  ## --- player picker: choices follow the current available board ---------
-  observe({
-    av <- view()$available
-    if (nrow(av) == 0L) {
-      updateSelectizeInput(session, "player_choice", choices = character(0),
-                           server = TRUE)
-      return(invisible(NULL))
-    }
-    ord <- if ("overall_rank" %in% names(av)) {
-      order(av$overall_rank, av$player_id, method = "radix")
-    } else {
-      order(-av$points, av$player_id, method = "radix")
-    }
-    av <- av[ord, , drop = FALSE]
-    labels <- sprintf("%s (%s%s)", av$player, av$pos,
-                      if ("points" %in% names(av))
-                        sprintf(", %.1f pts", av$points) else "")
-    choices <- stats::setNames(av$player_id, labels)
-    updateSelectizeInput(session, "player_choice", choices = choices,
-                         server = TRUE)
+  ## --- player search: tolerant name resolution over the available board ---
+  ## The one resolve_player() call in app.R (R/core.R: exact / prefix / substring
+  ## / fuzzy -- the same matcher the terminal uses), against view()$available and
+  ## the full snapshot table (so a drafted exact name resolves to "none", not to
+  ## fuzzy look-alikes). The query is trimws()'d first, so a whitespace-only
+  ## field ("   ") is treated as empty by BOTH this reactive and the renderUI
+  ## empty-container guard. A keystroke recomputes only this reactive -- never
+  ## recs() / recommend_players() (AGENTS.md performance guardrail):
+  ## resolve_player() is O(n) string ops over <= ~320 available players,
+  ## sub-millisecond. Returns list(status, players, query); players is ordered by
+  ## points desc, player_id asc. output$search_results renders it; the
+  ## search_row_<k> observers and the "Registrar" button register
+  ## search_hits()$players$player_id[k].
+  ##
+  ## One cap for the results list: the observer count and the render cap read the
+  ## same constant so they cannot drift.
+  search_result_cap <- 8L
+  search_hits <- reactive({
+    resolve_player(trimws(input$player_query %||% ""), view()$available,
+                   snapshot$players)
   })
 
   ## --- pick entry / undo ---------------------------------------------------
@@ -230,7 +245,7 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     tryCatch({
       st <- record_pick(state(), pid, snapshot)
       commit_state(st)
-      updateSelectizeInput(session, "player_choice", selected = "")
+      updateTextInput(session, "player_query", value = "")
       nome <- snapshot$players$player[match(pid, snapshot$players$player_id)]
       feedback(list(kind = "ok", text = sprintf("Registrado: %s", nome)))
     }, error = function(e) {
@@ -247,9 +262,29 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     })
   }
 
+  ## "Registrar" (and, via the tags$head keydown script, Enter in the field)
+  ## registers the first / highlighted search result -- the row that carries
+  ## .search-result--active. Same do_pick() path as a result click.
   observeEvent(input$draft_btn, {
-    do_pick(input$player_choice,
-            "Selecione um jogador na busca antes de registrar.")
+    h   <- search_hits()$players
+    pid <- if (nrow(h) >= 1L) h$player_id[1] else NA_character_
+    do_pick(pid, "Selecione um jogador na busca antes de registrar.")
+  })
+
+  ## Click-to-pick on a search result (story 16). Each result row is a
+  ## <button id="search_row_k"> bound as a Shiny action button; row k registers
+  ## the k-th hit of search_hits()$players (already ordered points desc,
+  ## player_id asc). Capped at search_result_cap -- output$search_results shows at
+  ## most that many rows. Same do_pick() path as the "Registrar" button; a
+  ## keystroke or a click never re-calls recommend_players(). lapply + force() so
+  ## the index does not leak or defer.
+  lapply(seq_len(search_result_cap), function(k) {
+    force(k)
+    observeEvent(input[[sprintf("search_row_%d", k)]], {
+      h   <- search_hits()$players
+      pid <- if (k <= nrow(h)) h$player_id[k] else NA_character_
+      do_pick(pid, "Resultado de busca indisponível — refaça a busca.")
+    }, ignoreInit = TRUE)
   })
 
   ## Click-to-pick (story 14). Each candidate row is a <button id="pick_row_k">
@@ -365,6 +400,55 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     cls <- if (identical(fb$kind, "ok")) "draft-feedback draft-feedback--ok"
            else "draft-feedback draft-feedback--error"
     tags$div(class = cls, `aria-label` = "Feedback do registro", fb$text)
+  })
+
+  ## Search results (story 16, A-search). Pure formatting over search_hits() --
+  ## no second matcher, nothing recomputed. Empty (or whitespace-only) query ->
+  ## an empty .search-results container (no rows) -- the trimws() here matches the
+  ## one in the search_hits reactive so the two agree. A non-empty query that
+  ## matches nothing (resolve_player status "none") -> one .search-empty line.
+  ## Otherwise up to search_result_cap rows, each a <button id="search_row_k">
+  ## (Shiny action button): a click -- and Enter / Space when focused --
+  ## registers the pick via do_pick(). Row 1 carries .search-result--active: it
+  ## is the row "Registrar" and the tags$head Enter script fire (DESIGN.md "Campo
+  ## de busca + autocomplete"). nfl_team is an optional snapshot field -- joined
+  ## from snapshot$players the same way the status strip / recs_table do; absent
+  ## or NA -> bare pos, no separator, no NA.
+  output$search_results <- renderUI({
+    res <- search_hits()
+    q   <- trimws(input$player_query %||% "")
+    if (!nzchar(q)) {
+      return(tags$div(class = "search-results"))
+    }
+    if (identical(res$status, "none") || nrow(res$players) == 0L) {
+      return(tags$p(class = "search-empty",
+                    "Nenhum jogador disponível corresponde à busca."))
+    }
+    has_nfl <- "nfl_team" %in% names(snapshot$players)
+    hits    <- res$players[seq_len(min(search_result_cap, nrow(res$players))), ,
+                           drop = FALSE]
+    nfl     <- if (has_nfl) {
+      snapshot$players$nfl_team[match(hits$player_id, snapshot$players$player_id)]
+    } else {
+      rep(NA_character_, nrow(hits))
+    }
+    rows <- lapply(seq_len(nrow(hits)), function(k) {
+      pos_txt <- if (is.na(hits$pos[k])) "" else hits$pos[k]
+      if (nzchar(pos_txt) && !is.na(nfl[k]) && nzchar(nfl[k])) {
+        pos_txt <- paste(pos_txt, nfl[k])
+      }
+      cls <- if (k == 1L) "search-result action-button search-result--active"
+             else "search-result action-button"
+      tags$button(
+        type = "button",
+        id = sprintf("search_row_%d", k),
+        class = cls,
+        `aria-label` = paste("Registrar", hits$player[k]),
+        tags$span(class = "name", hits$player[k]),
+        tags$span(class = "pos", pos_txt)
+      )
+    })
+    tags$div(class = "search-results", rows)
   })
 
   output$recs_note <- renderText({

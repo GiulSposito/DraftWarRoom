@@ -185,3 +185,15 @@ Issues surfaced during review but intentionally not fixed in the story that foun
 - source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/15-all-team-rosters-panel.md`
   summary: Story 15 introduces a `<details>`/`<summary>` disclosure component (the collapsible all-team rosters panel) that has no entry in `docs/design/DESIGN.md`'s Components section. DESIGN.md is `status: final` and human-owned, so the story did not add one.
   evidence: Review finding (blind-hunter, story 15). The disclosure pattern is a new interaction primitive for this app; DESIGN.md should record it (background/summary treatment, focus ring, default-open behaviour, where it is allowed) so later stories reuse it consistently rather than re-deriving. Also relevant to story 17 (panel-grid layout) and story 23 (accessibility floor).
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/16-search-as-combobox.md`
+  summary: After a pick, `do_pick()` clears `player_query` server-side but keyboard focus stays on the vanished result `<button>`, so the operator must click back into the search field every round. EXPERIENCE.md ("Após registro, undo ou correção, foco retorna à busca/lista") wants focus returned automatically.
+  evidence: Review finding (blind-hunter + edge-case-hunter, story 16). Returning focus needs the `Shiny.*` / element-focus JS the story-16 spec vetoed, and belongs to the keyboard/focus model in story 22 (C1), which reworks "/" focus, arrow nav and post-action focus placement across search and the candidate list.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/16-search-as-combobox.md`
+  summary: The search results list silently truncates at 8 rows with no "+N mais — refine a busca" hint, and gives no signal when only the fuzzy tier of `resolve_player()` matched (e.g. "sem correspondência exata — mostrando aproximações"). The operator cannot tell a precise hit from a fuzzy guess before committing, nor that more matches exist.
+  evidence: Review finding (blind-hunter, story 16). The frozen spec fixes "no máximo 8 linhas" with no hint; adding a truncation counter and a fuzzy-match indicator is a self-contained copy/format increment. `resolve_player()` already distinguishes the tiers internally but does not report which one fired — closing this cleanly may want a small core return-value addition, so pair it with a story that owns the recs/search surface.
+
+- source_spec: `_bmad-output/specs/spec-fantasy-warroom/stories/16-search-as-combobox.md`
+  summary: The search `textInput("player_query")` carries no `autocomplete="off"` / `spellcheck="false"` / `autocapitalize` — browser autofill or the spellcheck squiggle can overlay the results list and red-underline player surnames.
+  evidence: Review finding (blind-hunter, story 16). Shiny's `textInput()` does not pass arbitrary attributes, so this needs a hand-built input or `htmltools::tagAppendAttributes()` on the control. Low value for a local single-user tool; fold in if story 22/23 rebuilds the field for combobox roles anyway.
