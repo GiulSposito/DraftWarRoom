@@ -94,3 +94,249 @@
     app.R calls exactly the same core recommendation and persistence functions as
     the terminal; no formulas duplicated in Shiny reactives. Verify terminal and
     Shiny produce the same recommendation order from the same RDS state.
+
+# --- Follow-on Shiny/UX increment (stories 9-25) -----------------------------
+# Distilled from docs/design/backlog-adaptacao-shiny.md, which was itself
+# distilled from docs/design/DESIGN.md, docs/design/EXPERIENCE.md and
+# docs/design/mockups/live-war-room.html. All of these stories refine CAP-11
+# (thin Shiny War Room); none adds a new capability. Backlog Tier D5 (persistent
+# audit trail) and D6 (arbitrary pick correction) are deliberately NOT here:
+# they contradict the "no event sourcing" / "persist only ordered picks"
+# constraints and CAP-6, and need a policy decision plus a spec reconciliation
+# before they can be specified. The suggested execution sequence in the backlog
+# doc is preserved: A1..A5, B1..B5, C1..C3, D1..D4.
+#
+# Performance guardrail for stories 14-21 (RETROSPECTIVE.md AV-4):
+# recommend_players() runs ~286 ms mid-draft. Any story that re-renders on
+# candidate focus must cache the recommendation frame in a reactive and
+# reorder / filter / select client-side — never re-call recommend_players()
+# per keystroke.
+
+- id: "9"
+  title: Dark terminal shell (A1)
+  description: >-
+    Add a www/ stylesheet built from the DESIGN.md design tokens (colors, system
+    mono stack, rounded.sm, spacing scale) and replace the default fluidPage
+    Bootstrap chrome. Pure look-and-feel over CAP-11; no output content, reactive,
+    core function or RDS contract changes.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference only: docs/design/DESIGN.md (visual tokens are the source),
+    docs/design/mockups/live-war-room.html. app.R stays a thin adapter — no
+    formula or business rule moves into it. No change to any renderTable/output
+    content, only its presentation.
+- id: "10"
+  title: Fixed status strip (A2)
+  description: >-
+    Replace textOutput("banner") with a sticky structured status strip: overall
+    PICK N in display type, team on the clock, the user's next pick, the last
+    registered pick (derived from picks + snapshot), and a "sessão local · salva"
+    indicator. Refines CAP-11's live-state surface.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Faixa de estado component), EXPERIENCE.md
+    (Voice and Tone table, e.g. "Pick 73 — Team Rocket", "Próximo: seu pick 76").
+    Last-pick line is derived from state()$picks + snapshot; do not persist it.
+- id: "11"
+  title: Candidate smart-list (A3)
+  description: >-
+    Reshape the recs_table into a short ranked list — rank, name + pos, tier,
+    score, one-line reason — with the #1 row emphasized by order and type weight,
+    and position filters as discrete badges. Same recommend_players() output,
+    new rendering. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Lista inteligente / Linha de candidato),
+    EXPERIENCE.md. Show at least five candidates. Do not recompute any
+    recommendation field in the view; render only what recommend_players()
+    already returns.
+- id: "12"
+  title: Grouped roster panel (A4)
+  description: >-
+    Reshape roster_table into visually stable groups — Titulares, FLEX, Banco —
+    with empty slots shown explicitly. Slot assignment comes from
+    roster_slots(roster, league); no new core logic. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Roster do operador). Use roster_slots()
+    from R/recommendation.R for slotting; do not reimplement starter selection
+    in app.R.
+- id: "13"
+  title: Microcopy and feedback pass (A5)
+  description: >-
+    Apply the EXPERIENCE.md Voice and Tone table to every notification and label
+    ("Registrado: X", "Já escolhido no pick 42. Busque outro jogador."), make
+    errors persist until the operator can act, and place confirmation feedback
+    next to the status strip. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/EXPERIENCE.md (Voice and Tone, State Patterns).
+    Copy and placement only — no change to when record_pick()/undo_pick() are
+    called or how state is saved.
+- id: "14"
+  title: Panel-grid layout (B1)
+  description: >-
+    Restructure the single vertical stack into design regions — workspace
+    (candidates + inspection), wide (board + roster), and audit — with a
+    two-state wide/narrow layout using simple collapse (no focus-preserving
+    tab panels, per the 2026-08-31 Sprint Change). Refines CAP-11; derives from
+    existing views only.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Layout & Spacing), EXPERIENCE.md
+    (Information Architecture, Responsive & Platform). Establishes the layout
+    pattern the rest of Tier B/C build on. No core or contract change.
+- id: "15"
+  title: Board grid (B2)
+  description: >-
+    Render the board as a round × team matrix with the current pick highlighted,
+    the operator's own picks labelled ("YOU"), and a transient highlight on the
+    newest pick. Pure over make_snake_schedule() + state$picks + snapshot;
+    replaces the flat recent_picks_table. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Board de draft), mockups/live-war-room.html.
+    No persisted "newest pick" flag — derive it from nrow(picks). Distinguish the
+    operator's picks by label, not colour alone.
+- id: "16"
+  title: Inspection panel (B3)
+  description: >-
+    Add a contextual inspection surface (Space or click on a candidate) showing
+    projection, value, market price (adp), tier and players remaining, urgency
+    (from p_next) and marginal roster impact (marginal_value) — all already
+    returned by recommend_players(). Shows "Não disponível neste snapshot" when
+    adp/p_next are absent. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Painel de inspeção), EXPERIENCE.md
+    (Component Patterns). All fields come from the recommend_players() frame;
+    recompute nothing. Do not re-call recommend_players() on focus change —
+    reuse the cached reactive (RETROSPECTIVE.md AV-4).
+- id: "17"
+  title: Undo control redesign (B4)
+  description: >-
+    Replace the plain Undo button with a persistent, warning-styled control that
+    shows the next pick to be undone (overall / player / team) and the count of
+    effective picks that can be undone (nrow(picks)). Still calls undo_pick();
+    no multi-target undo. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Undo), EXPERIENCE.md (Controle Undo).
+    undo_pick() is unchanged. The undoable count and next-to-undo line are
+    derived from state()$picks; do not persist them.
+- id: "18"
+  title: Read-only audit panel (B5)
+  description: >-
+    Add a compact event-history panel listing recent picks as "Registrado" lines.
+    Undo and correction events are not persisted in this increment, so the panel
+    is picks-only until a future audit-trail story. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Histórico de eventos), EXPERIENCE.md.
+    Derive the list from state()$picks + snapshot only. Do NOT introduce an
+    events log in state/draft.rds — that is out of scope and constraint-blocked.
+- id: "19"
+  title: Keyboard interaction model (C1)
+  description: >-
+    Implement the keyboard-first interaction layer: "/" focuses search, up/down
+    move the candidate highlight, Enter registers, Space inspects, Esc closes the
+    top layer, U undoes; with distinct rules inside an editable input versus
+    global. JS handlers plus Shiny.setInputValue. Refines CAP-11.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/EXPERIENCE.md (Interaction Primitives). Establishes
+    the keyboard contract for C2/C3. No core change; all behaviour rides on
+    existing core calls. Keep clicks working as an equivalent path.
+- id: "20"
+  title: Search as combobox (C2)
+  description: >-
+    Replace selectizeInput with a custom autocomplete: name / pos / NFL team
+    rows, the highlighted result being the Enter action, tolerant incremental
+    matching that reuses resolve_player() from R/core.R. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Campo de busca + autocomplete),
+    EXPERIENCE.md. Name matching MUST reuse resolve_player() — do not write a
+    second matcher in app.R.
+- id: "21"
+  title: Accessibility floor (C3)
+  description: >-
+    Add one aria-live=polite + aria-atomic region, combobox roles and labels, a
+    visible focus ring, and a Tab order following state → search → candidates →
+    inspection → board → roster. Targets the reduced set from the 2026-08-31
+    Sprint Change (no aria-activedescendant, roving tabindex, linear 200% zoom).
+    Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/EXPERIENCE.md (Accessibility Floor) and its
+    2026-08-31 change_log entry for the reduced scope. DESIGN.md contrast pairs
+    are accepted as-is (no WCAG audit deliverable).
+- id: "22"
+  title: Snapshot quality and start gate (D1)
+  description: >-
+    Add a surface that summarises the snapshot's season, method, sources,
+    scoring, coverage and warnings, blocks starting a draft on incompatibility,
+    and flags missing optional fields (e.g. adp / adp_sd). Adds one pure core
+    function snapshot_quality(); no RDS contract change. Supports CAP-11 setup.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/EXPERIENCE.md (Qualidade do snapshot, Flow 0).
+    snapshot_quality() is a pure function in R/ reading only fields already in
+    data/projections.rds — no network. The story spec negotiates any
+    rds-contracts.md / operations.md wording update.
+- id: "23"
+  title: In-app draft setup (D2)
+  description: >-
+    Add league configuration (teams, rounds via roster, slots, FLEX, scoring,
+    user team) and snake-order entry with Validate and Lock — the order-entry
+    flow the terminal already has, which app.R lacks. Touches the "YAML is read
+    in exactly two places" constraint; resolve at the story spec. Supports
+    CAP-11 setup.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/EXPERIENCE.md (Configuração da liga, Ordem snake,
+    Flow 0.5). The story spec MUST resolve whether editing the league writes
+    config/league.yml or lives only in state$league, and reconcile the YAML
+    constraint in SPEC.md / AGENTS.md before implementation.
+- id: "24"
+  title: Multi-session management (D3)
+  description: >-
+    Add a Sessions surface: list local sessions by recency, pre-select the
+    newest, require explicit confirm-to-restore, and handle the empty state.
+    Moves persistence from a single state/draft.rds to multiple named/dated
+    files; extends rds-contracts.md and R/persistence.R. Supports CAP-4/CAP-11.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/EXPERIENCE.md (Seleção de sessão, State Patterns,
+    Flow 4c). The story spec defines the multi-session file layout and updates
+    rds-contracts.md. Atomic save and .bak discipline per file are preserved.
+- id: "25"
+  title: Pause/resume and export (D4)
+  description: >-
+    Add pause/resume as an explicit session state (new status field in
+    state/draft.rds, schema_version bump plus a migration) that blocks normal
+    picks, and an export of picks, rosters, configuration and metadata via a
+    pure serializer. Supports CAP-11 operations.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/EXPERIENCE.md (Pausa/exportação, Conclusão, Flow 5).
+    The story spec adds the status field to rds-contracts.md and defines the
+    migration for pre-existing state files (wave 1 already hard-validates the
+    schema). Export is read-only and must not mutate the session.

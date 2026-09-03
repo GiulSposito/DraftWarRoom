@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live War Room — Pick 73</title>
+  <style>
+    /* Governing spines: DESIGN.md §§ Brand & Style, Colors, Typography, Layout & Spacing, Components; EXPERIENCE.md §§ Foundation, Information Architecture, Component Patterns, Interaction Primitives, Accessibility Floor, Responsive & Platform. */
+    :root { color-scheme: dark; --canvas:#0B0F14; --surface:#121922; --raised:#18222E; --border:#293746; --ink:#E7EDF3; --muted:#91A0AF; --action:#57D68D; --action-ink:#06120B; --focus:#67B7FF; --warning:#F2C14E; --danger:#FF6B6B; --gutter:12px; --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#06090d; color:var(--ink); font:13px/1.3 var(--mono); }
+    .window { width:min(100%,720px); min-height:100vh; margin:0 auto; background:var(--canvas); border-inline:1px solid var(--border); }
+    .top { position:sticky; top:0; z-index:3; background:var(--canvas); border-bottom:1px solid var(--border); padding:8px 12px; }
+    .utility, .status, .panel-head, .candidate, .board-grid, .undo, .roster-row, .event { display:flex; align-items:center; }
+    .utility { justify-content:space-between; color:var(--muted); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+    .utility strong { color:var(--ink); font-size:11px; }
+    .utility-actions { display:flex; gap:8px; }
+    button { min-height:24px; border:1px solid var(--border); border-radius:2px; background:var(--surface); color:var(--ink); font:inherit; cursor:default; }
+    button:focus, input:focus, .candidate.active { outline:2px solid var(--focus); outline-offset:-2px; }
+    .utility button { padding:2px 7px; color:var(--muted); }
+    .status { gap:8px; margin-top:8px; }
+    .live-pick { flex:0 0 auto; padding:7px 9px; border-radius:2px; background:var(--action); color:var(--action-ink); font-size:18px; font-weight:800; letter-spacing:-.04em; }
+    .clock { min-width:0; flex:1; }
+    .eyebrow, .panel-head h2, .table-head, .slot, kbd { color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .clock strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+    .next { flex:0 0 auto; border-left:1px solid var(--border); padding-left:8px; text-align:right; }
+    .next strong { color:var(--action); font-size:12px; }
+    .last { margin-top:7px; display:flex; gap:8px; align-items:baseline; border-top:1px solid var(--border); padding-top:7px; }
+    .last strong { font-size:12px; }
+    .last span { color:var(--muted); font-size:11px; }
+    main { display:grid; gap:var(--gutter); padding:var(--gutter); }
+    .panel { min-width:0; border:1px solid var(--border); border-radius:2px; background:var(--surface); }
+    .panel-head { min-height:34px; justify-content:space-between; gap:8px; border-bottom:1px solid var(--border); padding:0 8px; }
+    .panel-head h2 { margin:0; color:var(--ink); }
+    .hint { color:var(--muted); font-size:11px; }
+    kbd { border:1px solid var(--border); border-bottom-color:#506478; border-radius:2px; padding:1px 4px; color:var(--ink); font-family:inherit; }
+    .search { position:relative; padding:8px; background:var(--raised); }
+    label { display:block; margin-bottom:5px; color:var(--ink); font-size:11px; font-weight:700; }
+    input { width:100%; min-height:36px; border:1px solid var(--focus); border-radius:2px; background:var(--canvas); color:var(--ink); padding:0 9px; font:14px var(--mono); }
+    .autocomplete { margin:0; padding:0; list-style:none; border:1px solid var(--border); border-top:0; background:var(--surface); box-shadow:0 6px 14px #0008; }
+    .autocomplete li { display:grid; grid-template-columns:1fr auto auto; gap:8px; padding:7px 8px; border-top:1px solid #202b37; }
+    .autocomplete li:first-child { border-top:0; }
+    .autocomplete .selected { background:var(--raised); outline:2px solid var(--focus); outline-offset:-2px; }
+    .pos { color:var(--action); font-size:11px; font-weight:700; }
+    .nfl { color:var(--muted); font-size:11px; }
+    .feedback { border-top:1px solid var(--border); padding:6px 8px; color:var(--action); font-size:11px; }
+    .workspace { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(185px,.9fr); gap:var(--gutter); }
+    .smart-list { padding:4px 0; }
+    .table-head, .candidate { display:grid; grid-template-columns:30px minmax(0,1fr) 38px 42px; gap:6px; align-items:center; padding:6px 8px; }
+    .table-head { border-bottom:1px solid var(--border); }
+    .candidate { min-height:37px; border-bottom:1px solid #202b37; }
+    .candidate:last-child { border-bottom:0; }
+    .candidate.active { background:var(--raised); }
+    .name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
+    .candidate .meta, .score { color:var(--muted); text-align:right; font-size:11px; }
+    .candidate .reason { grid-column:2/-1; color:var(--muted); font-size:10px; margin-top:-3px; }
+    .candidate .rank { color:var(--action); font-weight:800; }
+    .inspect { background:var(--raised); }
+    .inspect dl { display:grid; grid-template-columns:1fr auto; gap:6px 12px; margin:0; padding:8px; font-size:11px; }
+    .inspect dt { color:var(--muted); }
+    .inspect dd { margin:0; text-align:right; }
+    .impact { border-top:1px solid var(--border); padding:7px 8px; color:var(--action); font-size:11px; }
+    .undo { justify-content:space-between; gap:8px; border-color:#765f2b; padding:8px; color:var(--warning); }
+    .undo strong { color:var(--ink); }
+    .undo p { margin:2px 0 0; color:var(--muted); font-size:10px; }
+    .undo button { border-color:#765f2b; color:var(--warning); padding:2px 7px; }
+    .wide { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(175px,.8fr); gap:var(--gutter); }
+    .board-wrap { overflow-x:auto; }
+    .board { min-width:395px; padding:8px; }
+    .board-grid { display:grid; grid-template-columns:52px repeat(5,1fr); border:1px solid var(--border); }
+    .board-grid > div { min-height:42px; border-right:1px solid var(--border); border-bottom:1px solid var(--border); padding:5px; font-size:10px; }
+    .board-grid > div:nth-child(6n) { border-right:0; }
+    .board-grid > div:nth-last-child(-n+6) { border-bottom:0; }
+    .board-grid .header { min-height:auto; background:var(--raised); color:var(--muted); font-size:9px; font-weight:700; text-transform:uppercase; }
+    .board-grid .round { color:var(--muted); background:var(--raised); font-size:10px; font-weight:700; }
+    .cell { position:relative; }
+    .cell b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .cell small { color:var(--muted); }
+    .cell.current { background:var(--action); color:var(--action-ink); outline:2px solid var(--focus); outline-offset:-2px; }
+    .cell.current small { color:var(--action-ink); }
+    .cell.yours::after { content:'YOU'; position:absolute; top:4px; right:4px; color:var(--action); font-size:8px; font-weight:800; }
+    .cell.open { color:var(--muted); }
+    .roster { padding:2px 8px 8px; }
+    .roster-group { margin-top:7px; }
+    .roster-row { gap:6px; min-height:31px; border-top:1px solid #202b37; }
+    .slot { flex:0 0 36px; color:var(--action); }
+    .roster-row .empty { color:var(--muted); }
+    .roster-row small { margin-left:auto; color:var(--muted); }
+    .history { padding:3px 8px 8px; }
+    .event { gap:7px; min-height:26px; border-top:1px solid #202b37; color:var(--muted); font-size:10px; }
+    .event time { flex:0 0 34px; color:var(--ink); }
+    .event strong { color:var(--warning); }
+    .controls { display:flex; justify-content:flex-end; gap:8px; padding:0 12px 12px; }
+    .controls button { padding:4px 8px; }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    @media (max-width:560px) { .workspace, .wide { grid-template-columns:1fr; } .next { display:none; } .window { border:0; } }
+  </style>
+</head>
+<body>
+  <div class="window">
+    <header class="top">
+      <div class="utility"><strong>War Room / live</strong><span>sessão local · salva</span><span class="utility-actions"><button>Pausar</button><button>Exportar</button></span></div>
+      <div class="status" aria-label="Estado atual do draft">
+        <div class="live-pick">PICK 73</div>
+        <div class="clock"><span class="eyebrow">Round 7 · no relógio</span><strong>Team Rocket</strong></div>
+        <div class="next"><span class="eyebrow">Seu próximo</span><br><strong>Pick 76</strong></div>
+      </div>
+      <div class="last"><span>Último</span><strong>72 · D. Smith</strong><span>WR · PHI · Team Apex</span></div>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="search-title">
+        <div class="panel-head"><h2 id="search-title">Registrar pick</h2><span class="hint">↑↓ selecionar · <kbd>Enter</kbd> registrar · <kbd>Espaço</kbd> inspecionar</span></div>
+        <div class="search">
+          <label for="player-search">Buscar jogador disponível</label>
+          <input id="player-search" type="text" value="Nico" role="combobox" aria-expanded="true" aria-controls="player-results" aria-activedescendant="nico-collins" autocomplete="off">
+          <ul class="autocomplete" id="player-results" role="listbox" aria-label="3 resultados disponíveis">
+            <li id="nico-collins" class="selected" role="option" aria-selected="true"><strong>Nico Collins</strong><span class="pos">WR</span><span class="nfl">HOU</span></li>
+            <li role="option" aria-selected="false"><strong>Nick Chubb</strong><span class="pos">RB</span><span class="nfl">CLE</span></li>
+            <li role="option" aria-selected="false"><strong>Nico Johnson</strong><span class="pos">TE</span><span class="nfl">DAL</span></li>
+          </ul>
+        </div>
+        <div class="feedback" aria-live="polite" aria-atomic="true">Disponível para registrar: Nico Collins · pick 73 · Undo: 72 picks efetivos</div>
+      </section>
+
+      <div class="workspace">
+        <section class="panel" aria-labelledby="smart-title">
+          <div class="panel-head"><h2 id="smart-title">Candidatos</h2><span class="hint">Todos · QB RB WR TE</span></div>
+          <div class="smart-list" role="listbox" aria-label="Recomendações disponíveis">
+            <div class="table-head"><span>#</span><span>Jogador</span><span>Tier</span><span>Score</span></div>
+            <div class="candidate active" role="option" aria-selected="true"><span class="rank">01</span><span class="name">Nico Collins <span class="pos">WR HOU</span></span><span class="meta">A</span><span class="score">84.2</span><span class="reason">Valor + necessidade WR · cliff após este tier</span></div>
+            <div class="candidate" role="option" aria-selected="false"><span class="rank">02</span><span class="name">Josh Jacobs <span class="pos">RB GB</span></span><span class="meta">A</span><span class="score">82.7</span><span class="reason">Volume projetado · RB ainda estável</span></div>
+            <div class="candidate" role="option" aria-selected="false"><span class="rank">03</span><span class="name">Trey McBride <span class="pos">TE ARI</span></span><span class="meta">B</span><span class="score">80.1</span><span class="reason">Vantagem TE · impacto de lineup</span></div>
+            <div class="candidate" role="option" aria-selected="false"><span class="rank">04</span><span class="name">Joe Burrow <span class="pos">QB CIN</span></span><span class="meta">B</span><span class="score">78.9</span><span class="reason">Melhor QB disponível · sem urgência</span></div>
+            <div class="candidate" role="option" aria-selected="false"><span class="rank">05</span><span class="name">Rashee Rice <span class="pos">WR KC</span></span><span class="meta">B</span><span class="score">77.6</span><span class="reason">Valor de mercado · perfil WR2</span></div>
+          </div>
+        </section>
+
+        <aside class="panel inspect" aria-labelledby="inspect-title">
+          <div class="panel-head"><h2 id="inspect-title">Inspeção</h2><span class="hint"><kbd>Espaço</kbd></span></div>
+          <dl><dt>Foco</dt><dd>Nico Collins · WR HOU</dd><dt>Projeção</dt><dd>15.8 pts</dd><dt>Valor</dt><dd>84.2</dd><dt>Preço de mercado</dt><dd>WR18</dd><dt>Tier</dt><dd>A · 1 restante</dd><dt>Urgência</dt><dd>Alta</dd></dl>
+          <div class="impact">Impacto: ocupa WR2 · melhora lineup em +2.1</div>
+        </aside>
+      </div>
+
+      <section class="panel undo" aria-label="Undo multinível">
+        <div><strong>Undo <kbd>U</kbd> · 72 disponíveis</strong><p>Próximo: pick 72 · D. Smith · Team Apex</p></div>
+        <button>Desfazer pick 72</button>
+      </section>
+
+      <div class="wide">
+        <section class="panel" aria-labelledby="board-title">
+          <div class="panel-head"><h2 id="board-title">Board</h2><span class="hint">←→ navegar · <kbd>Enter</kbd> corrigir</span></div>
+          <div class="board-wrap"><div class="board" role="grid" aria-label="Board do draft, picks 66 a 75">
+            <div class="board-grid">
+              <div class="header">RND</div><div class="header">Thunder</div><div class="header">Apex</div><div class="header">Rocket</div><div class="header">Giu</div><div class="header">Orbit</div>
+              <div class="round">07<br>66–70</div><div class="cell"><b>Mahomes</b><small>66 · QB</small></div><div class="cell"><b>Metcalf</b><small>67 · WR</small></div><div class="cell"><b>Andrews</b><small>68 · TE</small></div><div class="cell yours"><b>Etienne</b><small>69 · RB</small></div><div class="cell"><b>Moore</b><small>70 · WR</small></div>
+              <div class="round">08<br>71–75</div><div class="cell"><b>Hurts</b><small>71 · QB</small></div><div class="cell"><b>D. Smith</b><small>72 · WR</small></div><div class="cell current" aria-current="true"><b>ABERTO</b><small>73 · agora</small></div><div class="cell yours"><b>Seu pick</b><small>76 · próximo</small></div><div class="cell open"><b>—</b><small>75</small></div>
+            </div>
+          </div></div>
+        </section>
+
+        <section class="panel" aria-labelledby="roster-title">
+          <div class="panel-head"><h2 id="roster-title">Seu roster</h2><span class="hint">2/9 slots</span></div>
+          <div class="roster">
+            <div class="roster-group"><div class="eyebrow">Titulares</div><div class="roster-row"><span class="slot">RB1</span><strong>Etienne</strong><small>JAX</small></div><div class="roster-row"><span class="slot">WR1</span><strong>A. St. Brown</strong><small>DET</small></div><div class="roster-row"><span class="slot">WR2</span><span class="empty">— aberto</span></div><div class="roster-row"><span class="slot">FLEX</span><span class="empty">— aberto</span></div></div>
+            <div class="roster-group"><div class="eyebrow">Banco</div><div class="roster-row"><span class="slot">BN</span><span class="empty">—</span></div></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel" aria-labelledby="history-title">
+        <div class="panel-head"><h2 id="history-title">Auditoria</h2><span class="hint">Eventos efetivos e correções</span></div>
+        <div class="history"><div class="event"><time>20:14</time><span>Registrado · pick 72 · D. Smith → Team Apex</span></div><div class="event"><time>20:13</time><span>Registrado · pick 71 · J. Hurts → Team Thunder</span></div><div class="event"><time>20:08</time><strong>Undo aplicado</strong><span>· pick 65 voltou a aberto</span></div></div>
+      </section>
+    </main>
+    <div class="controls"><button>Referência <kbd>?</kbd></button><button>Exportar draft</button></div>
+  </div>
+</body>
+</html>
