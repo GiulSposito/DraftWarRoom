@@ -104,9 +104,17 @@
 # they contradict the "no event sourcing" / "persist only ordered picks"
 # constraints and CAP-6, and need a policy decision plus a spec reconciliation
 # before they can be specified. The suggested execution sequence in the backlog
-# doc is preserved: A1..A5, B1..B5, C1..C3, D1..D4.
+# doc was A1..A5, B1..B5, C1..C3, D1..D4.
 #
-# Performance guardrail for stories 14-21 (RETROSPECTIVE.md AV-4):
+# 2026-09-03 reprioritisation (real-data test session): stories 14 and 15 are new
+# and C2 (Search as combobox) was pulled ahead of the Tier B/C work to 16, so the
+# operator-facing readability, click-to-pick, autocomplete and all-team-roster
+# gaps land before the panel-grid restructure. Renumbering of what was already
+# here: old 14..19 -> 17..22; old 20 (C2) -> 16; old 21..25 -> 23..27. The "story
+# N" cross-references inside the frozen story docs 9-13 predate this shift and
+# were not rewritten — this yaml is authoritative for execution order.
+#
+# Performance guardrail for stories 16-24 (RETROSPECTIVE.md AV-4):
 # recommend_players() runs ~286 ms mid-draft. Any story that re-renders on
 # candidate focus must cache the recommendation frame in a reactive and
 # reorder / filter / select client-side — never re-call recommend_players()
@@ -179,6 +187,62 @@
     Copy and placement only — no change to when record_pick()/undo_pick() are
     called or how state is saved.
 - id: "14"
+  title: Candidate-list readability and click-to-pick
+  description: >-
+    Two operator-facing fixes to the story 11 smart list. (1) Raise the contrast
+    of the content currently rendered in --ink-muted: the candidate reason, tier,
+    score and the player names in the roster / available tables are content, not
+    decoration, and must read at a glance on the dark surface. (2) Register a
+    player when the operator clicks anywhere on that candidate row — the same
+    record_pick() path Enter on row 1 already uses — with a visible hover / active
+    affordance. Refines CAP-11; record_pick() / undo_pick() are unchanged.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Colors, contrast pairs) and its 2026-08-31
+    change_log entry (the WCAG audit deliverable was dropped, the token pairs
+    were "accepted as-is" — this story revisits that). The story spec revises the
+    --ink-muted usage rule: content (reason / tier / score, player names) moves to
+    --ink or a new higher-contrast secondary token; --ink-muted stays only on
+    true decoration (rank digits, column heads, slot labels). The row click calls
+    record_pick() through the existing observeEvent path — no second pick code
+    path, no recommend_players() call on hover. The spec also decides whether a
+    row click is immediate (the operator asked for a direct click; undo covers a
+    misclick) or needs a confirm affordance. Keyboard row nav is story 22 (C1).
+- id: "15"
+  title: All-team rosters panel
+  description: >-
+    Add a panel showing every league team's roster, not only the operator's — the
+    /teams view the terminal already has and app.R lacks. Each team is a compact
+    slot group (Titulares / FLEX / Banco) built from derive_draft_view()$rosters
+    and roster_slots(), with the operator's own team marked. Read-only, derived
+    every render. Refines CAP-11; no core or RDS-contract change.
+  spec_checkpoint: true
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Roster do operador — reuse the same row
+    shape), scripts/draft.R (the /teams command). Slotting reuses roster_slots()
+    from R/recommendation.R exactly as story 12 does — no second slotting path in
+    app.R. Every team's roster comes from the one derive_draft_view() call already
+    in the reactive graph; no per-team recomputation. The story spec settles where
+    the panel sits in the layout and how it collapses in the narrow ESPN-side
+    window.
+- id: "16"
+  title: Search as combobox (C2)
+  description: >-
+    Replace selectizeInput with a custom autocomplete: name / pos / NFL team
+    rows, the highlighted result being the Enter action, tolerant incremental
+    matching that reuses resolve_player() from R/core.R. Refines CAP-11.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Reference: docs/design/DESIGN.md (Campo de busca + autocomplete),
+    EXPERIENCE.md. Name matching MUST reuse resolve_player() — do not write a
+    second matcher in app.R. Pulled ahead of the keyboard-model story (now 22,
+    C1): ship mouse + type-to-filter + Enter now; full keyboard navigation of the
+    result list and the aria-combobox roles land with stories 22 (C1) and 23 (C3).
+    Any per-keystroke work stays client-side — never re-call recommend_players().
+- id: "17"
   title: Panel-grid layout (B1)
   description: >-
     Restructure the single vertical stack into design regions — workspace
@@ -192,7 +256,7 @@
     Reference: docs/design/DESIGN.md (Layout & Spacing), EXPERIENCE.md
     (Information Architecture, Responsive & Platform). Establishes the layout
     pattern the rest of Tier B/C build on. No core or contract change.
-- id: "15"
+- id: "18"
   title: Board grid (B2)
   description: >-
     Render the board as a round × team matrix with the current pick highlighted,
@@ -205,7 +269,7 @@
     Reference: docs/design/DESIGN.md (Board de draft), mockups/live-war-room.html.
     No persisted "newest pick" flag — derive it from nrow(picks). Distinguish the
     operator's picks by label, not colour alone.
-- id: "16"
+- id: "19"
   title: Inspection panel (B3)
   description: >-
     Add a contextual inspection surface (Space or click on a candidate) showing
@@ -220,7 +284,7 @@
     (Component Patterns). All fields come from the recommend_players() frame;
     recompute nothing. Do not re-call recommend_players() on focus change —
     reuse the cached reactive (RETROSPECTIVE.md AV-4).
-- id: "17"
+- id: "20"
   title: Undo control redesign (B4)
   description: >-
     Replace the plain Undo button with a persistent, warning-styled control that
@@ -233,7 +297,7 @@
     Reference: docs/design/DESIGN.md (Undo), EXPERIENCE.md (Controle Undo).
     undo_pick() is unchanged. The undoable count and next-to-undo line are
     derived from state()$picks; do not persist them.
-- id: "18"
+- id: "21"
   title: Read-only audit panel (B5)
   description: >-
     Add a compact event-history panel listing recent picks as "Registrado" lines.
@@ -245,7 +309,7 @@
     Reference: docs/design/DESIGN.md (Histórico de eventos), EXPERIENCE.md.
     Derive the list from state()$picks + snapshot only. Do NOT introduce an
     events log in state/draft.rds — that is out of scope and constraint-blocked.
-- id: "19"
+- id: "22"
   title: Keyboard interaction model (C1)
   description: >-
     Implement the keyboard-first interaction layer: "/" focuses search, up/down
@@ -256,21 +320,11 @@
   done_checkpoint: false
   invoke_dev_with: >-
     Reference: docs/design/EXPERIENCE.md (Interaction Primitives). Establishes
-    the keyboard contract for C2/C3. No core change; all behaviour rides on
-    existing core calls. Keep clicks working as an equivalent path.
-- id: "20"
-  title: Search as combobox (C2)
-  description: >-
-    Replace selectizeInput with a custom autocomplete: name / pos / NFL team
-    rows, the highlighted result being the Enter action, tolerant incremental
-    matching that reuses resolve_player() from R/core.R. Refines CAP-11.
-  spec_checkpoint: false
-  done_checkpoint: false
-  invoke_dev_with: >-
-    Reference: docs/design/DESIGN.md (Campo de busca + autocomplete),
-    EXPERIENCE.md. Name matching MUST reuse resolve_player() — do not write a
-    second matcher in app.R.
-- id: "21"
+    the keyboard contract for C3 and adds full keyboard navigation to the
+    story 16 combobox (which shipped mouse + type + Enter only). No core change;
+    all behaviour rides on existing core calls. Keep clicks working as an
+    equivalent path (story 14 already makes a candidate row click register).
+- id: "23"
   title: Accessibility floor (C3)
   description: >-
     Add one aria-live=polite + aria-atomic region, combobox roles and labels, a
@@ -284,7 +338,7 @@
     Reference: docs/design/EXPERIENCE.md (Accessibility Floor) and its
     2026-08-31 change_log entry for the reduced scope. DESIGN.md contrast pairs
     are accepted as-is (no WCAG audit deliverable).
-- id: "22"
+- id: "24"
   title: Snapshot quality and start gate (D1)
   description: >-
     Add a surface that summarises the snapshot's season, method, sources,
@@ -298,7 +352,7 @@
     snapshot_quality() is a pure function in R/ reading only fields already in
     data/projections.rds — no network. The story spec negotiates any
     rds-contracts.md / operations.md wording update.
-- id: "23"
+- id: "25"
   title: In-app draft setup (D2)
   description: >-
     Add league configuration (teams, rounds via roster, slots, FLEX, scoring,
@@ -313,7 +367,7 @@
     Flow 0.5). The story spec MUST resolve whether editing the league writes
     config/league.yml or lives only in state$league, and reconcile the YAML
     constraint in SPEC.md / AGENTS.md before implementation.
-- id: "24"
+- id: "26"
   title: Multi-session management (D3)
   description: >-
     Add a Sessions surface: list local sessions by recency, pre-select the
@@ -326,7 +380,7 @@
     Reference: docs/design/EXPERIENCE.md (Seleção de sessão, State Patterns,
     Flow 4c). The story spec defines the multi-session file layout and updates
     rds-contracts.md. Atomic save and .bak discipline per file are preserved.
-- id: "25"
+- id: "27"
   title: Pause/resume and export (D4)
   description: >-
     Add pause/resume as an explicit session state (new status field in

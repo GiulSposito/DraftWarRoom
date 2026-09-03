@@ -180,6 +180,19 @@ Sem código.
 | A4 | Painel de roster agrupado | Reformatar o `roster_table`: grupos Titulares / FLEX / Banco, slots vazios visíveis. `roster_slots()` já dá a atribuição. |
 | A5 | Microcopy + feedback | Aplicar a tabela Voice/Tone do `EXPERIENCE.md` (`Registrado: X`, `Já escolhido no pick 42. Busque outro jogador.`). Erros persistem até o operador poder agir; feedback junto à faixa de estado. |
 
+#### Repriorização de 2026-09-03 (sessão de teste com dados reais)
+
+Depois de rodar um draft de teste na app, quatro lacunas de uso ficaram
+evidentes e foram promovidas para **antes** do restante do Tier B/C. No
+`stories.yaml` elas são as stories **14, 15, 16**; o backlog abaixo (antes 14→25)
+desceu +3.
+
+| # | Story | Escopo |
+|---|---|---|
+| A6 (story 14) | Legibilidade da lista + clicar para draftar | (1) Subir o contraste do conteúdo hoje em `--ink-muted` — `motivo`, `tier`, `score` e os **nomes de jogador** são conteúdo, não decoração. (2) Clicar em qualquer ponto da linha de candidato registra o jogador (mesmo caminho `record_pick()` do `Enter` na linha 1). Revisa o par de tokens de contraste aceito "como está" no Sprint Change de 2026-08-31 → `spec_checkpoint`. |
+| A7 (story 15) | Painel de rosters de todos os times | O que o terminal já faz com `/teams` e a app não tem: roster por time (grupos Titulares / FLEX / Banco) via `derive_draft_view()$rosters` + `roster_slots()`, com o time do operador marcado. Read-only, sem tocar core nem contrato. `spec_checkpoint` só para fixar layout / colapso na janela estreita. |
+| C2 → story 16 | Busca como combobox | **Puxada para frente** do Tier C: autocomplete próprio reusando `resolve_player()`. Entrega mouse + type-to-filter + `Enter` agora; navegação por teclado e roles `aria-combobox` ficam com C1 (story 22) e C3 (story 23). |
+
 ### Tier B — layout + render mais rico (deriva de views existentes; no máximo um helper puro read-only)
 
 | # | Story | Escopo | Toca core? |
@@ -214,9 +227,13 @@ Sem código.
 ## 7. Ordem sugerida de especificação
 
 ```
-0 → A1 → A2 → A3 / A4 / A5 → B1 → B2 → B3 → B4 → C1 / C2 / C3
+0 → A1 → A2 → A3 / A4 / A5 → A6 / A7 / C2 → B1 → B2 → B3 → B4 → B5 → C1 → C3
   → D1 → D4 → D2 → D3 → (D5 → D6, só se a policy permitir)
 ```
+
+A6 / A7 / C2 = stories 14 / 15 / 16 no `stories.yaml` (repriorização de
+2026-09-03). C2 saiu do bloco Tier C e foi para 16; C1 (story 22) depois passa a
+navegação por teclado por cima do combobox já entregue.
 
 - Tier A entrega a maior parte da percepção visual do mockup sem risco de
   regressão funcional.
