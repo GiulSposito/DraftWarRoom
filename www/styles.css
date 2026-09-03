@@ -35,6 +35,18 @@
  * The .roster-panel / .roster-group / .roster-row block of
  * docs/design/mockups/live-war-room.html is the adapted reference.
  *
+ * Story 13 (A5) adds the .draft-feedback block: a persistent pick/undo
+ * feedback region rendered directly below .status-strip, replacing the three
+ * showNotification() toasts. A confirmation ("Registrado: <player>") carries a
+ * green (--action) left border -- the reserved confirmation use in DESIGN.md
+ * section Colors; an error (already-drafted, empty selection, undo with no
+ * pick, local-persistence failure) carries a --danger left border and danger
+ * text, and it does not auto-clear -- it stays until the next pick or undo
+ * (DESIGN.md section Components "Feedback e erro"). The empty container
+ * (:empty, feedback() still NULL) collapses so nothing shows before the first
+ * event. Container tokens are DESIGN.md verbatim (surface / border /
+ * rounded.sm / spacing / typography.data).
+ *
  * Load order: Shiny appends this UI-level tags$head <link> after the registered
  * Bootstrap dependency CSS, so these rules win on equal specificity; the few
  * !important flags below are only where a Bootstrap rule is more specific.
@@ -730,4 +742,39 @@ textarea:focus,
 .recs-note {
   color: var(--danger);
   font-weight: 700;
+}
+
+/* --- persistent pick / undo feedback region (story 13, A5) ----------- */
+/* DESIGN.md components.feedback-error (success = colors.action, error =
+ * colors.danger) + section Components "Feedback e erro": confirmation brief and
+ * textual next to the status strip, errors persist until the operator can act.
+ * All values are DESIGN.md tokens: surface / border / rounded.sm / spacing /
+ * typography.data. The empty container (feedback() == NULL) collapses. */
+
+.draft-feedback {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.draft-feedback:empty {
+  display: none;
+}
+
+/* green left border -- the reserved confirmation use (DESIGN.md Colors). */
+.draft-feedback--ok {
+  border-left: 3px solid var(--action);
+}
+
+/* danger left border + text -- error persists until the next pick / undo. */
+.draft-feedback--error {
+  border-left: 3px solid var(--danger);
+  color: var(--danger);
 }

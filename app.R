@@ -47,22 +47,28 @@ ui <- fluidPage(
   ## is a header element like .app-header, not the story-14 layout grid.
   uiOutput("status_strip"),
 
+  ## Persistent pick/undo feedback region (DESIGN.md "Feedback e erro", A5).
+  ## Sibling immediately below the status strip -- a renderUI over a
+  ## reactiveVal, never a dismissible toast: confirmations are brief and
+  ## textual, errors persist until the next pick/undo.
+  uiOutput("draft_feedback"),
+
   fluidRow(
     column(5,
       selectizeInput("player_choice", "Jogador",
                      choices = NULL,
-                     options = list(placeholder = "buscar jogador disponivel...")),
-      actionButton("draft_btn", "Draft", class = "btn-primary"),
+                     options = list(placeholder = "buscar jogador disponível...")),
+      actionButton("draft_btn", "Registrar", class = "btn-primary"),
       actionButton("undo_btn", "Undo")
     ),
     column(3,
-      selectInput("pos_filter", "Filtrar disponiveis por posicao",
+      selectInput("pos_filter", "Filtrar disponíveis por posição",
                   choices = c("ALL", .warroom_pos_levels), selected = "ALL")
     )
   ),
 
   fluidRow(
-    column(12, h4("Recomendacoes"),
+    column(12, h4("Recomendações"),
            div(class = "recs-note", textOutput("recs_note")),
            div(class = "recs-filters",
                radioButtons("recs_pos_filter",
@@ -78,7 +84,7 @@ ui <- fluidPage(
   ),
 
   fluidRow(
-    column(12, h4("Disponiveis"), tableOutput("available_table"))
+    column(12, h4("Disponíveis"), tableOutput("available_table"))
   )
 )
 
@@ -136,10 +142,17 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
   .warroom_assert_snapshot_binding(init_state, snapshot)
   state <- reactiveVal(init_state)
 
+  ## Persistent pick/undo feedback (story 13, A5). Holds the last event as
+  ## list(kind = "ok" | "error", text = <string>); NULL before the first
+  ## event. Written only by the two observeEvent handlers below -- and only
+  ## after commit_state() has succeeded, or in the tryCatch error branch. No
+  ## timer / invalidateLater: the region changes only on the next pick or undo.
+  feedback <- reactiveVal(NULL)
+
   ## record_pick()/undo_pick() then save_state() BEFORE updating the
   ## reactiveVal -- same order as the terminal (AGENTS.md: never update the UI
   ## before the save has succeeded). Errors propagate to the caller, which
-  ## reports them via showNotification() and leaves `state` untouched.
+  ## writes the feedback region and leaves `state` untouched.
   commit_state <- function(new_st) {
     save_state(new_st, state_path)
     state(new_st)
@@ -171,27 +184,56 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
   })
 
   ## --- pick entry / undo ---------------------------------------------------
+  ## record_pick()/undo_pick()/commit_state() are called exactly as before, in
+  ## the same order, inside the same tryCatch. Only the operator feedback path
+  ## changed: each branch now writes feedback() with an EXPERIENCE.md Voice and
+  ## Tone string instead of raising a transient notification. The pick number N
+  ## in the already-drafted / undo messages is derived from state()$picks
+  ## (overall of the matching row) -- a persisted fact, never a new field.
   observeEvent(input$draft_btn, {
     pid <- input$player_choice
     if (is.null(pid) || length(pid) != 1L || is.na(pid) || !nzchar(pid)) {
-      showNotification("selecione um jogador antes de draftar", type = "warning")
+      feedback(list(kind = "error",
+                    text = "Selecione um jogador na busca antes de registrar."))
       return(invisible(NULL))
     }
     tryCatch({
       st <- record_pick(state(), pid, snapshot)
       commit_state(st)
       updateSelectizeInput(session, "player_choice", selected = "")
+      nome <- snapshot$players$player[match(pid, snapshot$players$player_id)]
+      feedback(list(kind = "ok", text = sprintf("Registrado: %s", nome)))
     }, error = function(e) {
-      showNotification(paste("pick rejeitado:", conditionMessage(e)), type = "error")
+      msg <- conditionMessage(e)
+      picks_now <- state()$picks
+      n <- picks_now$overall[match(pid, picks_now$player_id)]
+      if (grepl("already been drafted", msg, fixed = TRUE) && !is.na(n)) {
+        feedback(list(kind = "error", text = sprintf(
+          "Já escolhido no pick %d. Busque outro jogador.", as.integer(n))))
+      } else {
+        feedback(list(kind = "error",
+                      text = sprintf("Pick não registrado: %s", msg)))
+      }
     })
   })
 
   observeEvent(input$undo_btn, {
+    pk <- state()$picks
+    had_pick <- nrow(pk) > 0L
+    ov <- if (had_pick) as.integer(pk$overall[nrow(pk)]) else NA_integer_
     tryCatch({
       st <- undo_pick(state())
       commit_state(st)
+      feedback(list(kind = "ok", text = if (is.na(ov)) "Undo aplicado."
+        else sprintf("Undo aplicado — pick %d voltou a aberto.", ov)))
     }, error = function(e) {
-      showNotification(paste("nada a desfazer:", conditionMessage(e)), type = "error")
+      ## undo_pick() only raises when there are no picks; anything else that
+      ## lands here (e.g. save_state() failing) is a real failure and must be
+      ## surfaced, not reported as "nothing to undo" (EXPERIENCE.md "Falha
+      ## local de persistência").
+      feedback(list(kind = "error", text = if (had_pick)
+        sprintf("Undo não aplicado: %s", conditionMessage(e))
+        else "Nada a desfazer — nenhum pick efetivo."))
     })
   })
 
@@ -254,6 +296,23 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
       main,
       last_line,
       tags$div(class = "status-strip-saved", "sessão local · salva"))
+  })
+
+  ## Persistent feedback region (story 13, A5) -- pure formatting over the
+  ## feedback() reactiveVal, same renderUI-over-a-reactiveVal shape the status
+  ## strip / smart list / roster panel use. NULL -> an empty .draft-feedback
+  ## container (collapsed by `:empty` in styles.css, nothing visible). An event
+  ## -> one line with .draft-feedback--ok / --error. Static `aria-label` only;
+  ## the aria-live announcement of the event is story 21.
+  output$draft_feedback <- renderUI({
+    fb <- feedback()
+    if (is.null(fb)) {
+      return(tags$div(class = "draft-feedback",
+                      `aria-label` = "Feedback do registro"))
+    }
+    cls <- if (identical(fb$kind, "ok")) "draft-feedback draft-feedback--ok"
+           else "draft-feedback draft-feedback--error"
+    tags$div(class = cls, `aria-label` = "Feedback do registro", fb$text)
   })
 
   output$recs_note <- renderText({

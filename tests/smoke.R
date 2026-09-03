@@ -1710,8 +1710,9 @@ shiny::testServer(.s8_bake_server(snap, s8c_path, cfg), {
   if (state()$picks$player_id[1] != pid)  fail("s8: draft_btn recorded the wrong player")
   if (pid %in% view()$available$player_id) fail("s8: drafted player still shows as available")
 
-  ## record_pick() rejects a re-draft of the same player -> showNotification,
-  ## state unchanged (no crash of the reactive session).
+  ## record_pick() rejects a re-draft of the same player -> the draft_feedback
+  ## region shows the error (story 13), state unchanged (no crash of the
+  ## reactive session).
   session$setInputs(player_choice = pid)
   session$setInputs(draft_btn = 2)
   if (nrow(state()$picks) != 1L) fail("s8: rejected re-draft changed the pick count")
@@ -2740,6 +2741,308 @@ if (sum(grepl("recommend_players\\(", app12_code)) != 1L) {
 }
 
 cat("story 12 offline checks OK -- grouped roster panel renderUI over rosters + roster_slots\n")
+
+## --- story 13: microcopy + persistent pick/undo feedback region (A5) --------
+## app.R replaces the three showNotification() toasts with uiOutput(
+## "draft_feedback") -- a renderUI over a feedback() reactiveVal placed right
+## below the status strip. Confirmations (kind "ok") get a green left border,
+## errors (kind "error") a danger border and persist until the next pick/undo
+## (no timer / auto-clear). Strings follow EXPERIENCE.md Voice and Tone; the
+## pick number N is derived from state()$picks$overall. Static labels are
+## accented. Non-ASCII needles are \u-escaped so this file stays ASCII-clean.
+## Reuses `fail`, `ui`, `snap`, `cfg`, `league`, `team_order`,
+## `.s8_bake_server`, `.strip_html`, `.html_count`.
+
+s13_empty  <- "Selecione um jogador na busca antes de registrar."
+s13_noundo <- "Nada a desfazer \u2014 nenhum pick efetivo."
+s13_already <- function(n) sprintf("J\u00e1 escolhido no pick %d. Busque outro jogador.", n)
+s13_undo    <- function(n) sprintf("Undo aplicado \u2014 pick %d voltou a aberto.", n)
+.s13_fb <- function(output) .strip_html(output$draft_feedback)
+
+## (13a) Pick aceito -> draft-feedback--ok + "Registrado: <player>".
+s13a_path <- file.path(tempdir(), "warroom-s13a", "draft.rds")
+unlink(dirname(s13a_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13a_path, cfg), {
+  pid  <- view()$available$player_id[1]
+  name <- snap$players$player[match(pid, snap$players$player_id)]
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 1)
+  h <- .s13_fb(output)
+  if (!grepl("draft-feedback--ok", h, fixed = TRUE)) {
+    fail("s13a: accepted pick did not render a draft-feedback--ok line: ", h)
+  }
+  if (!grepl(sprintf("Registrado: %s", name), h, fixed = TRUE)) {
+    fail("s13a: accepted pick feedback missing 'Registrado: <player>': ", h)
+  }
+  if (!grepl('aria-label="Feedback do registro"', h, fixed = TRUE)) {
+    fail("s13a: feedback region missing the static aria-label: ", h)
+  }
+})
+
+## (13a2) error -> ok transition: feedback() is last-event, not an append, so a
+## successful pick after an error replaces the red line with the green one.
+s13a2_path <- file.path(tempdir(), "warroom-s13a2", "draft.rds")
+unlink(dirname(s13a2_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13a2_path, cfg), {
+  session$setInputs(draft_btn = 1)                 # empty-selection error
+  if (!grepl("draft-feedback--error", .s13_fb(output), fixed = TRUE)) {
+    fail("s13a2: setup error not shown")
+  }
+  pid <- view()$available$player_id[1]
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 2)
+  h <- .s13_fb(output)
+  if (!grepl("draft-feedback--ok", h, fixed = TRUE) ||
+      grepl("draft-feedback--error", h, fixed = TRUE)) {
+    fail("s13a2: successful pick did not clear the prior error line: ", h)
+  }
+})
+
+## (13b) Selecao vazia -> pre-check, draft-feedback--error, state intact.
+s13b_path <- file.path(tempdir(), "warroom-s13b", "draft.rds")
+unlink(dirname(s13b_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13b_path, cfg), {
+  before <- nrow(state()$picks)
+  session$setInputs(draft_btn = 1)   # player_choice still NULL
+  h <- .s13_fb(output)
+  if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
+      !grepl(s13_empty, h, fixed = TRUE)) {
+    fail("s13b: empty selection did not render the error microcopy: ", h)
+  }
+  if (nrow(state()$picks) != before) fail("s13b: empty-selection click changed state()")
+})
+
+## (13c) Jogador ja escolhido -> draft-feedback--error, "Ja escolhido no pick N"
+## with N == overall of the existing pick; pick count unchanged.
+s13c_path <- file.path(tempdir(), "warroom-s13c", "draft.rds")
+unlink(dirname(s13c_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13c_path, cfg), {
+  pid <- view()$available$player_id[1]
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 1)
+  n      <- state()$picks$overall[match(pid, state()$picks$player_id)]
+  after1 <- nrow(state()$picks)
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 2)
+  h <- .s13_fb(output)
+  if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
+      !grepl(s13_already(n), h, fixed = TRUE)) {
+    fail("s13c: re-draft did not render 'Ja escolhido no pick N': ", h)
+  }
+  if (nrow(state()$picks) != after1) fail("s13c: rejected re-draft changed the pick count")
+})
+
+## (13d) Undo com pick -> draft-feedback--ok, "Undo aplicado - pick N voltou a
+## aberto" with N == overall of the removed pick (captured before undo_pick()).
+s13d_path <- file.path(tempdir(), "warroom-s13d", "draft.rds")
+unlink(dirname(s13d_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13d_path, cfg), {
+  pid <- view()$available$player_id[1]
+  session$setInputs(player_choice = pid)
+  session$setInputs(draft_btn = 1)
+  n <- state()$picks$overall[nrow(state()$picks)]
+  session$setInputs(undo_btn = 1)
+  h <- .s13_fb(output)
+  if (!grepl("draft-feedback--ok", h, fixed = TRUE) ||
+      !grepl(s13_undo(n), h, fixed = TRUE)) {
+    fail("s13d: undo with a pick did not render the ok microcopy: ", h)
+  }
+  if (nrow(state()$picks) != 0L) fail("s13d: undo did not remove the pick")
+})
+
+## (13e) Undo sem pick -> draft-feedback--error, own message (never the core
+## conditionMessage), state intact.
+s13e_path <- file.path(tempdir(), "warroom-s13e", "draft.rds")
+unlink(dirname(s13e_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13e_path, cfg), {
+  session$setInputs(undo_btn = 1)
+  h <- .s13_fb(output)
+  if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
+      !grepl(s13_noundo, h, fixed = TRUE)) {
+    fail("s13e: undo with no pick did not render 'Nada a desfazer': ", h)
+  }
+  if (grepl("no picks to undo", h, fixed = TRUE)) {
+    fail("s13e: undo error leaked the core conditionMessage")
+  }
+  if (nrow(state()$picks) != 0L) fail("s13e: undo on empty draft changed state()")
+})
+
+## (13e2) Draft cheio / id invalido: record_pick() raises an error that is NOT
+## "already been drafted" -> the else branch, "Pick nao registrado: <msg>",
+## state intact.
+s13e2_path <- file.path(tempdir(), "warroom-s13e2", "draft.rds")
+unlink(dirname(s13e2_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13e2_path, cfg), {
+  before <- nrow(state()$picks)
+  session$setInputs(player_choice = "SYN-NOT-A-REAL-ID")
+  session$setInputs(draft_btn = 1)
+  h <- .s13_fb(output)
+  if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
+      !grepl("Pick n\u00e3o registrado:", h, fixed = TRUE)) {
+    fail("s13e2: unknown-id error did not render 'Pick nao registrado:': ", h)
+  }
+  if (grepl("draft-feedback--ok", h, fixed = TRUE)) fail("s13e2: unknown id rendered an ok line")
+  if (nrow(state()$picks) != before) fail("s13e2: rejected unknown id changed state()")
+})
+
+## (13e3) Falha de save_state(): commit_state() raises inside save_state() ->
+## the generic else branch (not "already drafted"); state() intact (pick not
+## confirmed) and the error line persists across an unrelated input change.
+## The state dir is made unwritable after init so the atomic write of the next
+## pick fails. Skipped -- not failed -- where chmod is a no-op (suite running
+## as root in CI/Docker), detected by a post-chmod write probe.
+s13e3_path <- file.path(tempdir(), "warroom-s13e3", "draft.rds")
+unlink(dirname(s13e3_path), recursive = TRUE)
+save_state(new_draft(snap, team_order, "Team 01", league = league), s13e3_path)
+s13e3_dir <- dirname(s13e3_path)
+Sys.chmod(s13e3_dir, "0500")
+s13e3_probe <- file.path(s13e3_dir, ".probe")
+if (isTRUE(suppressWarnings(file.create(s13e3_probe)))) {
+  unlink(s13e3_probe)
+  Sys.chmod(s13e3_dir, "0700")
+  cat("s13e3: state dir still writable after chmod (root?) -- save-failure assertions skipped\n")
+} else {
+  s13e3_ok <- tryCatch({
+    shiny::testServer(.s8_bake_server(snap, s13e3_path, cfg), {
+      before <- nrow(state()$picks)
+      pid <- view()$available$player_id[1]
+      session$setInputs(player_choice = pid)
+      session$setInputs(draft_btn = 1)
+      h <- .s13_fb(output)
+      if (!grepl("draft-feedback--error", h, fixed = TRUE) ||
+          !grepl("Pick n\u00e3o registrado:", h, fixed = TRUE)) {
+        fail("s13e3: save_state failure did not render 'Pick nao registrado:': ", h)
+      }
+      if (nrow(state()$picks) != before) fail("s13e3: pick shown as confirmed despite save failure")
+      session$setInputs(pos_filter = "RB")
+      if (!grepl("Pick n\u00e3o registrado:", .s13_fb(output), fixed = TRUE)) {
+        fail("s13e3: save-failure error line did not persist")
+      }
+    })
+    TRUE
+  }, finally = Sys.chmod(s13e3_dir, "0700"))
+  if (!isTRUE(s13e3_ok)) fail("s13e3: save_state-failure scenario did not complete")
+}
+
+## (13f) Persistencia do erro: after an error, neither an unrelated input
+## change nor elapsed time clears the region -- there is no timer /
+## invalidateLater that would dismiss it (DESIGN.md "erros persistem ...").
+s13f_path <- file.path(tempdir(), "warroom-s13f", "draft.rds")
+unlink(dirname(s13f_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13f_path, cfg), {
+  session$setInputs(draft_btn = 1)   # empty-selection error
+  if (!grepl(s13_empty, .s13_fb(output), fixed = TRUE)) fail("s13f: setup error not shown")
+  session$setInputs(pos_filter = "RB")
+  if (!grepl(s13_empty, .s13_fb(output), fixed = TRUE)) {
+    fail("s13f: unrelated input change cleared the feedback region")
+  }
+  session$elapse(60000)
+  if (!grepl(s13_empty, .s13_fb(output), fixed = TRUE)) {
+    fail("s13f: feedback region auto-cleared after elapsed time (a timer crept in)")
+  }
+})
+
+## (13g) Estado inicial: no event -> empty div.draft-feedback (no modifier).
+s13g_path <- file.path(tempdir(), "warroom-s13g", "draft.rds")
+unlink(dirname(s13g_path), recursive = TRUE)
+shiny::testServer(.s8_bake_server(snap, s13g_path, cfg), {
+  h <- .s13_fb(output)
+  if (!grepl('class="draft-feedback"', h, fixed = TRUE)) {
+    fail("s13g: initial feedback region is not a bare .draft-feedback div: ", h)
+  }
+  if (.html_count(h, "draft-feedback--") != 0L) {
+    fail("s13g: initial feedback region already carries an --ok/--error modifier: ", h)
+  }
+})
+
+## (13h) www/styles.css absent at runtime -> the region still assembles with no
+## server error. Same swap-and-restore as (12i).
+s13h_state <- new_draft(snap, team_order, "Team 01", league = league)
+s13h_path  <- file.path(tempdir(), "warroom-s13hcss", "draft.rds")
+unlink(dirname(s13h_path), recursive = TRUE)
+save_state(s13h_state, s13h_path)
+s13h_bak <- file.path(tempdir(), "styles.css.s13bak")
+if (!file.copy("www/styles.css", s13h_bak, overwrite = TRUE)) {
+  fail("s13: could not stage a backup of www/styles.css for the css-absent check")
+}
+s13h_seen <- NULL
+s13h_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s13_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s13_env))
+  srv <- s13_env$server
+  formals(srv)$snapshot   <- snap
+  formals(srv)$state_path <- s13h_path
+  formals(srv)$config     <- cfg
+  shiny::testServer(srv, {
+    pid <- view()$available$player_id[1]
+    session$setInputs(player_choice = pid)
+    session$setInputs(draft_btn = 1)
+    hh <- .strip_html(output$draft_feedback)
+    s13h_seen <<- grepl("draft-feedback--ok", hh, fixed = TRUE)
+  })
+  isTRUE(s13h_seen)
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s13h_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) fail("s13: www/styles.css not restored after the css-absent check")
+if (!isTRUE(s13h_ok)) fail("s13: feedback region did not assemble with www/styles.css absent: ",
+                           attr(s13h_ok, "msg"))
+
+## (13i) static UI + app.R + CSS analysis (Acceptance Criteria).
+ui13 <- as.character(htmltools::renderTags(ui)$html)
+if (!grepl('id="draft_feedback"', ui13, fixed = TRUE)) fail("s13: rendered ui has no id=\"draft_feedback\"")
+p_ss13 <- regexpr('id="status_strip"', ui13, fixed = TRUE)
+p_df13 <- regexpr('id="draft_feedback"', ui13, fixed = TRUE)
+if (p_ss13 < 0L || p_df13 < 0L || p_df13 < p_ss13) {
+  fail("s13: id=\"draft_feedback\" does not appear after id=\"status_strip\" in the UI")
+}
+for (id in c("status_strip", "recs_note", "recs_table", "recs_pos_filter",
+             "roster_table", "recent_picks_table", "available_table",
+             "player_choice", "draft_btn", "undo_btn", "pos_filter")) {
+  if (!grepl(id, ui13, fixed = TRUE)) fail("s13: rendered ui lost the story 8-12 id '", id, "'")
+}
+app13 <- readLines("app.R", warn = FALSE, encoding = "UTF-8")
+app13_all <- paste(app13, collapse = "\n")
+if (any(grepl("showNotification", app13, fixed = TRUE))) fail("s13: app.R still calls showNotification()")
+for (s in c('h4("Recomenda\u00e7\u00f5es")', 'h4("Dispon\u00edveis")',
+            "Filtrar dispon\u00edveis por posi\u00e7\u00e3o",
+            "buscar jogador dispon\u00edvel...",
+            'actionButton("draft_btn", "Registrar"')) {
+  if (!grepl(s, app13_all, fixed = TRUE)) fail("s13: app.R missing the accented string '", s, "'")
+}
+for (s in c("Recomendacoes", "Disponiveis", "disponiveis por posicao",
+            "jogador disponivel...", 'actionButton("draft_btn", "Draft"')) {
+  if (grepl(s, app13_all, fixed = TRUE)) fail("s13: app.R still carries the un-accented '", s, "'")
+}
+if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app13))) {
+  fail("s13: app.R introduced a forbidden JS / theming dependency")
+}
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app13))) fail("s13: app.R names an RNG symbol")
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.file\\(", app13))) {
+  fail("s13: app.R names a network / scrape symbol")
+}
+app13_code <- sub("#.*$", "", app13)
+if (any(grepl("^\\s*(record_pick|undo_pick|recommend_players)\\s*<-", app13_code))) {
+  fail("s13: app.R redefines record_pick / undo_pick / recommend_players")
+}
+if (sum(grepl("recommend_players\\(", app13_code)) != 1L) {
+  fail("s13: recommend_players() not called exactly once in app.R code")
+}
+css13 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+css13_code <- gsub("(?s)/\\*.*?\\*/", "", css13, perl = TRUE)
+for (tok in c(".draft-feedback", ".draft-feedback--ok", ".draft-feedback--error")) {
+  if (!grepl(tok, css13_code, fixed = TRUE)) fail("s13: styles.css missing '", tok, "'")
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css13_code, perl = TRUE)) {
+  fail("s13: styles.css pulls a remote asset -- network on the live path")
+}
+
+cat("story 13 offline checks OK -- persistent pick/undo feedback region + microcopy pass\n")
 
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript
