@@ -1639,14 +1639,21 @@ if (!identical(names(formals(server)),
   srv
 }
 
+## output$status_strip is a renderUI -> testServer hands back either a
+## processed list(html=, deps=) or the raw tag object; flatten both to a string.
+.strip_html <- function(o) {
+  h <- if (is.list(o) && !is.null(o$html)) o$html else o
+  paste(as.character(h), collapse = "\n")
+}
+
 ## (8a) No state/draft.rds -> new_draft() with default team_order / config
-## user_team, saved immediately; banner shows R01 overall 1.
+## user_team, saved immediately; status strip shows PICK 1 / Round 01.
 s8a_path <- file.path(tempdir(), "warroom-s8a", "draft.rds")
 unlink(dirname(s8a_path), recursive = TRUE)
 shiny::testServer(.s8_bake_server(snap, s8a_path, cfg), {
-  b <- output$banner
-  if (!grepl("R01", b, fixed = TRUE) || !grepl("overall 1", b, fixed = TRUE)) {
-    fail("s8: new-draft banner wrong: ", b)
+  b <- .strip_html(output$status_strip)
+  if (!grepl("PICK 1", b, fixed = TRUE) || !grepl("Round 01", b, fixed = TRUE)) {
+    fail("s8: new-draft status strip wrong: ", b)
   }
 })
 if (!file.exists(s8a_path)) fail("s8: new draft not saved on first load")
@@ -1657,7 +1664,7 @@ if (!identical(d8a$team_order, sprintf("Team %02d", seq_len(league$teams)))) {
   fail("s8: team_order not the default 'Team NN' sequence")
 }
 
-## (8b) Existing state/draft.rds -> load_state() used; banner reflects
+## (8b) Existing state/draft.rds -> load_state() used; status strip reflects
 ## derive_draft_view().
 s8b_path <- file.path(tempdir(), "warroom-s8b", "draft.rds")
 unlink(dirname(s8b_path), recursive = TRUE)
@@ -1671,9 +1678,9 @@ shiny::testServer(.s8_bake_server(snap, s8b_path, cfg), {
   }
   v <- derive_draft_view(state(), snap)
   if (!identical(v$current_overall, 3L)) fail("s8: resumed view current_overall wrong")
-  b <- output$banner
-  if (!grepl("overall 3", b, fixed = TRUE)) {
-    fail("s8: resumed banner does not reflect derive_draft_view(): ", b)
+  b <- .strip_html(output$status_strip)
+  if (!grepl("PICK 3", b, fixed = TRUE)) {
+    fail("s8: resumed status strip does not reflect derive_draft_view(): ", b)
   }
 })
 
@@ -1802,7 +1809,7 @@ shiny::testServer(.s8_bake_server(snap, s8e_path, cfg), {
   }
 })
 
-## (8f) Draft complete -> banner shows "DRAFT COMPLETO", recommendations empty.
+## (8f) Draft complete -> status strip shows "DRAFT COMPLETO", recommendations empty.
 s8f_path <- file.path(tempdir(), "warroom-s8f", "draft.rds")
 unlink(dirname(s8f_path), recursive = TRUE)
 full8 <- new_draft(snap, team_order, "Team 01", league = league)
@@ -1813,8 +1820,8 @@ full8$picks <- data.frame(
 )
 save_state(full8, s8f_path)
 shiny::testServer(.s8_bake_server(snap, s8f_path, cfg), {
-  b <- output$banner
-  if (!grepl("DRAFT COMPLETO", b, fixed = TRUE)) fail("s8: completed-draft banner wrong: ", b)
+  b <- .strip_html(output$status_strip)
+  if (!grepl("DRAFT COMPLETO", b, fixed = TRUE)) fail("s8: completed-draft status strip wrong: ", b)
   if (nrow(recs()) != 0L) fail("s8: completed-draft recommendations not empty")
 })
 
@@ -1825,7 +1832,7 @@ unlink(dirname(s8bind_path), recursive = TRUE)
 snap_future8 <- snap; snap_future8$created_at <- snap$created_at + 3600
 save_state(new_draft(snap_future8, team_order, "Team 01", league = league), s8bind_path)
 msg <- expect_error(
-  shiny::testServer(.s8_bake_server(snap, s8bind_path, cfg), { output$banner }),
+  shiny::testServer(.s8_bake_server(snap, s8bind_path, cfg), { output$status_strip }),
   "s8: Shiny startup against a mismatched snapshot")
 if (!grepl("wrong snapshot", msg)) fail("s8: Shiny binding-mismatch error wording: ", msg)
 unlink(dirname(s8bind_path), recursive = TRUE)
@@ -1944,7 +1951,7 @@ if (!grepl('class="recs-note"', ui9, fixed = TRUE)) {
 if (grepl("color:#b00|color: #b00", ui9)) {
   fail("s9: rendered ui still carries the old inline recs-note color")
 }
-for (id in c("banner", "recs_note", "recs_table", "roster_table",
+for (id in c("status_strip", "recs_note", "recs_table", "roster_table",
              "recent_picks_table", "available_table",
              "player_choice", "draft_btn", "undo_btn", "pos_filter")) {
   if (!grepl(id, ui9, fixed = TRUE)) fail("s9: rendered ui lost the story-8 id '", id, "'")
@@ -1979,6 +1986,178 @@ if (!isTRUE(s9_ok)) {
 }
 
 cat("story 9 offline checks OK -- www/styles.css dark shell + app.R header, content unchanged\n")
+
+## --- story 10: fixed status strip (offline, renderUI over derived views) ----
+## app.R swaps h3(textOutput("banner")) for uiOutput("status_strip"), moved out
+## of the fluidRow to be a direct child of fluidPage (sibling to .app-header) so
+## position:sticky pins it against .container-fluid. output$status_strip is a
+## single renderUI composed purely over derive_draft_view() / next_user_pick()
+## + the last pick derived every render from picks + schedule + snapshot.
+## Reuses `fail`, `ui`, `.s8_bake_server`, `.strip_html` from the story 8/9 blocks.
+
+## UI tree: id="status_strip" is a pre-.row child of .container-fluid; the old
+## id="banner" is gone; every other story-8 id survives.
+ui10 <- as.character(htmltools::renderTags(ui)$html)
+if (!grepl('id="status_strip"', ui10, fixed = TRUE)) {
+  fail("s10: rendered ui has no id=\"status_strip\"")
+}
+if (grepl('id="banner"', ui10, fixed = TRUE)) {
+  fail("s10: rendered ui still carries id=\"banner\"")
+}
+p_strip <- regexpr('id="status_strip"', ui10, fixed = TRUE)
+p_row   <- regexpr('class="row"', ui10, fixed = TRUE)
+if (p_strip < 0L || p_row < 0L || p_strip > p_row) {
+  fail("s10: status_strip is not a child of .container-fluid ahead of any .row")
+}
+for (id in c("recs_note", "recs_table", "roster_table", "recent_picks_table",
+             "available_table", "player_choice", "draft_btn", "undo_btn",
+             "pos_filter")) {
+  if (!grepl(id, ui10, fixed = TRUE)) fail("s10: rendered ui lost the story-8 id '", id, "'")
+}
+
+## www/styles.css: the sticky strip rule and the Tab-focus scroll padding are
+## present; still no remote asset on the live path. Comments are stripped first
+## so the sticky assertion tests the RULE, not the prose that mentions it (the
+## exact loop-1 regression: it must fail if .status-strip becomes position:
+## relative).
+css10 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+## (?s): CSS comments span newlines -- make `.` match them too.
+css10_code <- gsub("(?s)/\\*.*?\\*/", "", css10, perl = TRUE)
+for (tok in c(".status-strip", "scroll-padding-top")) {
+  if (!grepl(tok, css10_code, fixed = TRUE)) fail("s10: styles.css missing '", tok, "'")
+}
+strip_rule <- regmatches(
+  css10_code, regexpr("\\.status-strip\\s*\\{[^}]*\\}", css10_code, perl = TRUE))
+if (length(strip_rule) != 1L || !grepl("position:\\s*sticky", strip_rule)) {
+  fail("s10: .status-strip rule is not 'position: sticky' (loop-1 regression): ",
+       paste(strip_rule, collapse = ""))
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css10_code, perl = TRUE)) {
+  fail("s10: styles.css pulls a remote asset -- network on the live path")
+}
+
+## Fabricate a state with `k` sequential picks (same shortcut as 8f), no
+## record_pick() loop needed for a formatting check.
+.s10_state <- function(k) {
+  st <- new_draft(snap, team_order, "Team 01", league = league)
+  if (k > 0L) {
+    st$picks <- data.frame(
+      overall    = seq_len(k),
+      player_id  = snap$players$player_id[seq_len(k)],
+      entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + seq_len(k),
+      stringsAsFactors = FALSE)
+  }
+  st
+}
+
+## I/O matrix rows: new draft (0), mid-draft opponent on clock (15), user on the
+## clock (24 -> overall 25 is Team 01's), user with no picks left (170), overall
+## 180 still LIVE (179 -> PICK 180, not complete: live/complete boundary), and
+## the completed draft (180). All grep needles are de-accented for C-locale
+## safety, matching the existing `grepl("ltimo", ...)` style.
+for (sc in list(list(k = 0L,   tag = "new"),
+                list(k = 15L,  tag = "mid"),
+                list(k = 24L,  tag = "user-on-clock"),
+                list(k = 170L, tag = "no-picks-left"),
+                list(k = 179L, tag = "last-live"),
+                list(k = 180L, tag = "complete"))) {
+  k <- sc$k; tag <- sc$tag
+  s10_path <- file.path(tempdir(), paste0("warroom-s10-", tag), "draft.rds")
+  unlink(dirname(s10_path), recursive = TRUE)
+  st10  <- .s10_state(k)
+  save_state(st10, s10_path)
+  v10   <- derive_draft_view(st10, snap)
+  nup10 <- next_user_pick(st10)
+  sch10 <- make_snake_schedule(st10$league$teams, st10$league$rounds)
+  shiny::testServer(.s8_bake_server(snap, s10_path, cfg), {
+    h <- .strip_html(output$status_strip)
+    ## aria-label lives on the renderUI output div (not the static ui tree).
+    if (!grepl('aria-label="Estado do draft"', h, fixed = TRUE)) {
+      fail("s10[", tag, "]: status strip lost its aria-label: ", h)
+    }
+    ## the static saved line must never fall out of the strip.
+    if (!grepl("sess", h, fixed = TRUE)) {
+      fail("s10[", tag, "]: status strip lost the 'sessao local' saved line: ", h)
+    }
+    if (isTRUE(v10$is_complete)) {
+      if (!grepl("DRAFT COMPLETO", h, fixed = TRUE) ||
+          !grepl(sprintf("%d picks<", k), h, fixed = TRUE)) {
+        fail("s10[", tag, "]: completed strip text wrong: ", h)
+      }
+      if (grepl("live-pick--current", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: live-pick--current must be absent on a completed draft")
+      }
+      ## no clock / proximo line on a completed draft (matrix: "sem Round / no relogio").
+      if (grepl("no rel", h, fixed = TRUE) || grepl("ximo:", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: completed strip still shows the clock / proximo line: ", h)
+      }
+    } else {
+      if (!grepl(sprintf("PICK %d<", v10$current_overall), h, fixed = TRUE)) {
+        fail("s10[", tag, "]: strip missing 'PICK ", v10$current_overall, "': ", h)
+      }
+      if (!grepl("live-pick--current", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: live-pick--current missing on the live pick")
+      }
+      if (grepl("live-pick--done", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: live-pick--done present on a live pick")
+      }
+      if (!grepl(v10$team_on_clock, h, fixed = TRUE)) {
+        fail("s10[", tag, "]: strip missing team on the clock '", v10$team_on_clock, "'")
+      }
+      if (!grepl(sprintf("Round %02d", v10$round_on_clock), h, fixed = TRUE)) {
+        fail("s10[", tag, "]: strip missing 'Round ", sprintf("%02d", v10$round_on_clock), "'")
+      }
+      if (!grepl("ximo:", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: strip missing the 'Proximo:' line: ", h)
+      }
+      if (is.na(nup10)) {
+        if (grepl("seu pick", h, fixed = TRUE)) {
+          fail("s10[", tag, "]: strip still says 'seu pick' with no user picks left: ", h)
+        }
+      } else if (!grepl(sprintf("seu pick %d", nup10), h, fixed = TRUE)) {
+        fail("s10[", tag, "]: strip missing 'seu pick ", nup10, "': ", h)
+      }
+    }
+    ## "Ultimo" line -- derived from picks + schedule + snapshot, incl. nfl_team.
+    if (k == 0L) {
+      if (!grepl("ltimo", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: strip missing the 'Ultimo' label with 0 picks: ", h)
+      }
+      ## value must be the em-dash placeholder, not a stray name / meta / NA
+      ## (needle written as a unicode escape so this file stays ASCII-clean).
+      if (!grepl("\u2014", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: 0-pick last line is not the em-dash placeholder: ", h)
+      }
+      if (grepl("status-strip-last-meta", h, fixed = TRUE) ||
+          grepl("NA", h, fixed = TRUE)) {
+        fail("s10[", tag, "]: 0-pick last line leaked a player / meta / NA: ", h)
+      }
+    } else {
+      lp10   <- snap$players[snap$players$player_id == st10$picks$player_id[k], ]
+      team10 <- st10$team_order[sch10$slot[k]]
+      for (piece in c(as.character(k), lp10$player, lp10$pos, lp10$nfl_team, team10)) {
+        if (!grepl(piece, h, fixed = TRUE)) {
+          fail("s10[", tag, "]: last-pick line missing '", piece, "': ", h)
+        }
+      }
+    }
+  })
+}
+
+## Static analysis (same spirit as 8h): the strip added no network / RNG symbol
+## and no forbidden theming / JS dependency to app.R.
+app10 <- readLines("app.R", warn = FALSE)
+if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue",
+              app10))) {
+  fail("s10: app.R introduced a forbidden JS / theming dependency")
+}
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.file\\(",
+              app10))) {
+  fail("s10: app.R names a network / scrape symbol")
+}
+
+cat("story 10 offline checks OK -- fixed status strip renderUI over derived views\n")
 
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript

@@ -41,9 +41,11 @@ ui <- fluidPage(
   ),
   div(class = "app-header", "Draft War Room"),
 
-  fluidRow(
-    column(12, h3(textOutput("banner")))
-  ),
+  ## Fixed status strip (DESIGN.md "Faixa de estado", A2). Direct child of
+  ## fluidPage, sibling to .app-header -- so its sticky container block is
+  ## .container-fluid (the whole scroll area), not a one-row .col-sm-12. This
+  ## is a header element like .app-header, not the story-14 layout grid.
+  uiOutput("status_strip"),
 
   fluidRow(
     column(5,
@@ -190,16 +192,63 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
 
   ## --- rendering (pure formatting over derived views / recommendations) ---
 
-  output$banner <- renderText({
-    v <- view()
-    if (isTRUE(v$is_complete)) {
-      sprintf("=== DRAFT COMPLETO -- %d picks ===", nrow(state()$picks))
+  ## Fixed status strip -- pure formatting over the same derived views
+  ## output$banner used (derive_draft_view(), next_user_pick()), plus the
+  ## "Ultimo" line derived every render from state()$picks + the snake schedule
+  ## + team_order + snapshot$players (same join as output$recent_picks_table).
+  ## Nothing here is persisted or held in a reactiveVal. "atualiza como uma
+  ## unidade" (EXPERIENCE.md) -> one renderUI, not several textOutput.
+  output$status_strip <- renderUI({
+    v     <- view()
+    st    <- state()
+    picks <- st$picks
+    npicks <- nrow(picks)
+
+    last_line <- if (npicks == 0L) {
+      tags$div(class = "status-strip-last",
+               tags$span(class = "status-strip-label", "Último"),
+               tags$span("—"))
     } else {
-      nup <- next_user_pick(state())
-      sprintf("R%02d  overall %d  |  na vez: %s  |  seu proximo pick: %s",
-              v$round_on_clock, v$current_overall, v$team_on_clock,
-              if (is.na(nup)) "-" else as.character(nup))
+      sched <- make_snake_schedule(st$league$teams, st$league$rounds)
+      last  <- picks[npicks, ]
+      pl    <- snapshot$players[match(last$player_id, snapshot$players$player_id), ]
+      time  <- st$team_order[sched$slot[last$overall]]
+      ## nfl_team is an optional snapshot field (R/projections.R:333 -- only
+      ## player_id/player/pos/points are required); drop it rather than print NA.
+      nfl   <- pl$nfl_team
+      meta  <- if (is.null(nfl) || is.na(nfl) || !nzchar(nfl)) {
+        sprintf("%s · %s", pl$pos, time)
+      } else {
+        sprintf("%s · %s · %s", pl$pos, nfl, time)
+      }
+      tags$div(class = "status-strip-last",
+        tags$span(class = "status-strip-label", "Último"),
+        tags$strong(sprintf("%d · %s", last$overall, pl$player)),
+        tags$span(class = "status-strip-last-meta", meta))
     }
+
+    if (isTRUE(v$is_complete)) {
+      main <- tags$div(class = "status-strip-main",
+        tags$div(class = "live-pick live-pick--done",
+                 sprintf("DRAFT COMPLETO · %d picks", npicks)))
+    } else {
+      nup <- next_user_pick(st)
+      main <- tags$div(class = "status-strip-main",
+        tags$div(class = "live-pick live-pick--current",
+                 sprintf("PICK %d", v$current_overall)),
+        tags$div(class = "status-strip-clock",
+          tags$span(class = "status-strip-eyebrow",
+                    sprintf("Round %02d · no relógio", v$round_on_clock)),
+          tags$strong(v$team_on_clock, title = v$team_on_clock)),
+        tags$div(class = "status-strip-next",
+          if (is.na(nup)) "Próximo: —"
+          else sprintf("Próximo: seu pick %d", nup)))
+    }
+
+    tags$div(class = "status-strip", `aria-label` = "Estado do draft",
+      main,
+      last_line,
+      tags$div(class = "status-strip-saved", "sessão local · salva"))
   })
 
   output$recs_note <- renderText({
