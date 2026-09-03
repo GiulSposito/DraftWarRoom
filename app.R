@@ -73,7 +73,7 @@ ui <- fluidPage(
   ),
 
   fluidRow(
-    column(6, h4("Seu roster"), tableOutput("roster_table")),
+    column(6, h4("Seu roster"), uiOutput("roster_table")),
     column(6, h4("Picks recentes"), tableOutput("recent_picks_table"))
   ),
 
@@ -328,27 +328,111 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
       rows)
   })
 
-  output$roster_table <- renderTable({
-    st <- state()
+  ## Grouped roster panel (story 12, A4). Pure formatting over
+  ## view()$rosters[[user_team]] + roster_slots() -- three fixed visual groups
+  ## (Titulares / FLEX / Banco), one row per league roster slot, unfilled slots
+  ## explicit ("- aberto" for starters/FLEX, "-" for the bench). roster_slots()
+  ## is the sole source for QB/RB/WR/TE/FLEX; K and DST are placed into their
+  ## dedicated Titulares slots by pos identity (a 1-to-1 placement, not starter
+  ## selection -- roster_slots() returns them as BENCH, mirroring lineup_value()),
+  ## and the bench excludes the K/DST so placed. No number (points/vor) is shown;
+  ## `val` (vor, points fallback -- same currency the old renderTable used,
+  ## duplication noted in deferred-work.md) only orders multi-slot rows and the
+  ## bench. Slot label is ink-muted / label type, deliberately NOT the reserved
+  ## action green (DESIGN.md section Colors).
+  output$roster_table <- renderUI({
+    st     <- state()
+    league <- st$league
+    rc     <- league$roster
     roster <- view()$rosters[[st$user_team]]
-    if (is.null(roster) || nrow(roster) == 0L) {
-      return(data.frame(slot = character(0), jogador = character(0),
-                        pos = character(0), pontos = numeric(0),
-                        vor = numeric(0), stringsAsFactors = FALSE))
+    has_players <- is.data.frame(roster) && nrow(roster) > 0L
+
+    slot_at <- character(0)
+    val_v   <- numeric(0)
+    if (has_players) {
+      sl      <- roster_slots(roster, league)
+      slot_at <- sl$slot[match(roster$player_id, sl$player_id)]
+      val_v   <- if ("vor" %in% names(roster)) as.numeric(roster$vor)
+                 else as.numeric(roster$points)
+      ## Pull K and DST out of BENCH into their own Titulares slots by pos
+      ## identity, highest `val` first; any surplus K/DST stays BENCH.
+      for (p in c("K", "DST")) {
+        want <- rc[[p]]
+        if (want > 0L) {
+          cand <- which(!is.na(roster$pos) & roster$pos == p & slot_at == "BENCH")
+          if (length(cand)) {
+            cand <- cand[order(-val_v[cand], roster$player_id[cand],
+                               method = "radix")]
+            slot_at[cand[seq_len(min(want, length(cand)))]] <- p
+          }
+        }
+      }
     }
-    slots   <- roster_slots(roster, st$league)
-    slot_at <- slots$slot[match(roster$player_id, slots$player_id)]
-    val     <- if ("vor" %in% names(roster)) roster$vor else roster$points
-    slot_lv <- c("QB", "RB", "WR", "TE", "FLEX", "BENCH")
-    ord <- order(match(slot_at, slot_lv), -val, roster$player_id, method = "radix")
-    data.frame(
-      slot    = slot_at[ord],
-      jogador = roster$player[ord],
-      pos     = roster$pos[ord],
-      pontos  = roster$points[ord],
-      vor     = if ("vor" %in% names(roster)) roster$vor[ord] else rep(NA_real_, length(ord)),
-      stringsAsFactors = FALSE
-    )
+    has_nfl <- has_players && "nfl_team" %in% names(roster)
+
+    ## position isolated when the league carries one slot (QB, TE, K, DST),
+    ## numbered when > 1 (RB1, RB2); FLEX -> FLEX; bench -> BN.
+    slot_labels <- function(pos, count) {
+      if (count <= 0L) character(0)
+      else if (count == 1L) pos
+      else paste0(pos, seq_len(count))
+    }
+    filled_row <- function(label, i) {
+      pos_txt  <- if (is.na(roster$pos[i])) "" else as.character(roster$pos[i])
+      name_txt <- if (is.na(roster$player[i])) "" else as.character(roster$player[i])
+      nt       <- if (has_nfl) roster$nfl_team[i] else NA_character_
+      has_nt   <- !is.na(nt) && nzchar(nt)
+      meta <- if (nzchar(pos_txt) && has_nt) paste(pos_txt, nt, sep = " · ")
+              else if (has_nt) nt
+              else pos_txt
+      tags$div(class = "roster-row",
+        tags$span(class = "slot", label),
+        tags$span(class = "name", name_txt),
+        tags$span(class = "meta", meta))
+    }
+    empty_row <- function(label, placeholder) {
+      tags$div(class = "roster-row roster-row--empty",
+        tags$span(class = "slot", label),
+        tags$span(class = "empty", placeholder))
+    }
+    ## players -> the group's labelled slots, ordered by `val` desc (tie:
+    ## player_id); free slots always come last.
+    fill_rows <- function(indices, labels, placeholder) {
+      if (length(indices) > 1L) {
+        indices <- indices[order(-val_v[indices], roster$player_id[indices],
+                                 method = "radix")]
+      }
+      lapply(seq_along(labels), function(j) {
+        if (j <= length(indices)) filled_row(labels[[j]], indices[[j]])
+        else empty_row(labels[[j]], placeholder)
+      })
+    }
+    group <- function(label, rows) {
+      tags$div(class = "roster-group",
+        tags$div(class = "roster-group-label", label),
+        rows)
+    }
+
+    starter_rows <- list()
+    for (p in c("QB", "RB", "WR", "TE", "K", "DST")) {
+      idx <- if (has_players) which(slot_at == p) else integer(0)
+      starter_rows <- c(starter_rows,
+                        fill_rows(idx, slot_labels(p, rc[[p]]), "— aberto"))
+    }
+
+    flex_idx  <- if (has_players) which(slot_at == "FLEX") else integer(0)
+    flex_rows <- fill_rows(flex_idx, slot_labels("FLEX", rc[["FLEX"]]),
+                           "— aberto")
+
+    bench_idx  <- if (has_players) which(slot_at == "BENCH") else integer(0)
+    n_bench    <- max(rc[["BENCH"]], length(bench_idx))
+    bench_rows <- fill_rows(bench_idx, rep("BN", n_bench), "—")
+
+    tags$div(class = "roster-panel", role = "group",
+             `aria-label` = "Roster do operador",
+      group("Titulares", starter_rows),
+      group("FLEX", flex_rows),
+      group("Banco", bench_rows))
   })
 
   output$recent_picks_table <- renderTable({

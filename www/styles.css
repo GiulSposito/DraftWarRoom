@@ -26,6 +26,15 @@
  * raised ground and an ink border -- never colour alone, never the focus-blue
  * ring. Grid mirrors docs/design/mockups/live-war-room.html.
  *
+ * Story 12 (A4) adds the .roster-panel block: the operator roster as three
+ * fixed visual groups (Titulares / FLEX / Banco), one .roster-row per league
+ * roster slot, unfilled slots explicit (.roster-row--empty). The slot label
+ * (.roster-row .slot) is ink-muted / typography.label, deliberately NOT the
+ * reserved action green -- DESIGN.md §Colors keeps green for the live pick /
+ * confirmation / action (a conscious deviation from the mockup's green .slot).
+ * The .roster-panel / .roster-group / .roster-row block of
+ * docs/design/mockups/live-war-room.html is the adapted reference.
+ *
  * Load order: Shiny appends this UI-level tags$head <link> after the registered
  * Bootstrap dependency CSS, so these rules win on equal specificity; the few
  * !important flags below are only where a Bootstrap rule is more specific.
@@ -412,6 +421,86 @@ body,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
+  color: var(--ink-muted);
+}
+
+/* --- grouped roster panel (story 12, A4) ------------------------------- */
+/* DESIGN.md components.operator-roster + §Components "Roster do operador":
+ * three stable visual groups, one row per roster slot, unfilled slots visible.
+ * Colours / typography / radius / spacing are DESIGN.md tokens; the
+ * .roster-panel / .roster-group / .roster-row block of
+ * docs/design/mockups/live-war-room.html is the adapted reference. The slot
+ * label is ink-muted / typography.label -- never the reserved action green. */
+
+.roster-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) 0;
+}
+
+.roster-group {
+  padding: var(--space-1) 0;
+}
+
+.roster-group + .roster-group {
+  border-top: 1px solid var(--border);
+}
+
+.roster-group-label {
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.roster-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: baseline;
+  min-height: 31px;
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.roster-group-label + .roster-row {
+  border-top: 0;
+}
+
+/* slot label -- ink-muted / typography.label. Deliberately NOT var(--action):
+ * DESIGN.md §Colors reserves green for the live pick / confirmation / action. */
+.roster-row .slot {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* name in one line -- truncates before it can push the meta out. */
+.roster-row .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster-row .meta {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.roster-row .empty {
+  grid-column: 2 / -1;
   color: var(--ink-muted);
 }
 

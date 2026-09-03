@@ -1646,6 +1646,12 @@ if (!identical(names(formals(server)),
   paste(as.character(h), collapse = "\n")
 }
 
+## count non-overlapping fixed-string occurrences in a rendered HTML blob.
+.html_count <- function(h, needle) {
+  m <- gregexpr(needle, h, fixed = TRUE)[[1]]
+  if (length(m) == 1L && m[1] == -1L) 0L else length(m)
+}
+
 ## (8a) No state/draft.rds -> new_draft() with default team_order / config
 ## user_team, saved immediately; status strip shows PICK 1 / Round 01.
 s8a_path <- file.path(tempdir(), "warroom-s8a", "draft.rds")
@@ -1762,20 +1768,39 @@ shiny::testServer(.s8_bake_server(snap, s8e_path, cfg), {
     fail("s8: off-turn recs_note not rendered when an opponent is on the clock")
   }
 
-  ## output$roster_table (verification-gap "Regression gap": roster_slots()'s
-  ## only real call site was never rendered by a test) -- cross-check the
-  ## rendered HTML against a direct roster_slots() call on the same roster, so
-  ## a swapped pontos/vor column or a broken match() alignment would fail here.
-  rt <- output$roster_table
+  ## output$roster_table is now the story-12 grouped renderUI panel (was a
+  ## renderTable). Cross-check the rendered markup: the fixed 3-group shell, one
+  ## .roster-row per league roster slot (sum(roster) == 15), and every player
+  ## Team 01 holds rendered as a filled row -- name in a .name span and the
+  ## "pos <midpoint> nfl_team" meta joined from the same snapshot row (no
+  ## points/vor number anywhere). A broken match() alignment or a dropped
+  ## nfl_team join would fail here. Midpoint built via intToUtf8() to keep
+  ## this file ASCII-clean.
+  mid_dot <- intToUtf8(183L)   # U+00B7 middle dot -- keep this file ASCII
+  rt <- .strip_html(output$roster_table)
+  if (!grepl('class="roster-panel"', rt, fixed = TRUE)) {
+    fail("s8: roster_table did not render the grouped .roster-panel: ", rt)
+  }
+  if (.html_count(rt, '<div class="roster-group">') != 3L) {
+    fail("s8: roster panel should render exactly 3 groups (Titulares/FLEX/Banco)")
+  }
+  if (.html_count(rt, '<div class="roster-row') != sum(mid8$league$roster)) {
+    fail("s8: roster panel rows != sum(roster) = ", sum(mid8$league$roster))
+  }
+  if (grepl("pontos", rt, fixed = TRUE) ||
+      grepl(sprintf("%.2f", mid8_roster$points[1]), rt, fixed = TRUE)) {
+    fail("s8: roster panel still shows a points/vor number")
+  }
   for (i in seq_len(nrow(mid8_roster))) {
-    pid <- mid8_roster$player_id[i]
-    slot_i <- mid8_slots$slot[mid8_slots$player_id == pid]
-    row_re <- sprintf(
-      "<td> %s </td>.*<td> %s </td>.*<td> %s </td>.*<td align=\"right\"> %s </td>.*<td align=\"right\"> %s </td>",
-      slot_i, mid8_roster$player[i], mid8_roster$pos[i],
-      sprintf("%.2f", mid8_roster$points[i]), sprintf("%.2f", mid8_roster$vor[i]))
-    if (!grepl(row_re, rt)) {
-      fail("s8: roster_table does not render the expected slot/player/pos/pontos/vor row for ", pid)
+    if (!grepl(sprintf('<span class="name">%s</span>', mid8_roster$player[i]),
+               rt, fixed = TRUE)) {
+      fail("s8: roster panel missing the filled .name row for ", mid8_roster$player_id[i])
+    }
+    if (!grepl(sprintf('<span class="meta">%s %s %s</span>',
+                       mid8_roster$pos[i], mid_dot, mid8_roster$nfl_team[i]),
+               rt, fixed = TRUE)) {
+      fail("s8: roster panel meta not 'pos <midpoint> nfl_team' for ",
+           mid8_roster$player_id[i])
     }
   }
 
@@ -2416,6 +2441,305 @@ if (n_rp_calls != 1L) {
 }
 
 cat("story 11 offline checks OK -- smart candidate list renderUI + position badges\n")
+
+## --- story 12: grouped roster panel (offline, renderUI over rosters + roster_slots) --
+## app.R swaps tableOutput("roster_table") for uiOutput("roster_table") plus a
+## renderUI that composes three fixed visual groups -- Titulares (QB RB WR TE K
+## DST), FLEX, Banco -- with one row per league roster slot. Unfilled slots are
+## explicit ("- aberto" for starters/FLEX, "-" for the bench). roster_slots() is
+## the sole source for QB/RB/WR/TE/FLEX; K/DST are placed into their dedicated
+## Titulares slots by pos identity; the bench excludes the K/DST so placed and
+## its BENCH floor is a floor, not a cap. Multi-slot rows and the bench are
+## ordered by vor (points fallback) desc. No points/vor number is shown.
+## Reuses `fail`, `ui`, `snap`, `team_order`, `cfg`, `league`, `.s8_bake_server`,
+## `.strip_html`, `.s11_count`, `.html_count`.
+
+s12_open  <- paste0(intToUtf8(0x2014L), " aberto")   # "- aberto" (starters/FLEX)
+s12_dash  <- intToUtf8(0x2014L)                       # "-"        (bench)
+s12_mid   <- intToUtf8(0x00B7L)                       # "*"        (pos . team)
+s12_sched <- make_snake_schedule(league$teams, league$rounds)
+s12_t1_ov <- s12_sched$overall[s12_sched$slot == 1L]  # "Team 01" is slot 1
+
+## Fabricate a contiguous-picks state whose Team 01 roster is exactly `pids`, in
+## that order; every non-Team-01 pick is filler. Direct $picks assignment (same
+## shortcut as .s10_state / 8f), so record_pick()'s feasibility guardrails do
+## not constrain the fixture.
+.s12_state <- function(pids, snapshot = snap) {
+  st   <- new_draft(snapshot, team_order, "Team 01", league = league)
+  pids <- as.character(pids)
+  n    <- length(pids)
+  if (n > 0L) {
+    m       <- s12_t1_ov[n]
+    is_t1   <- s12_sched$slot[seq_len(m)] == 1L
+    fillers <- setdiff(snapshot$players$player_id, pids)
+    if (sum(!is_t1) > length(fillers)) fail("s12: not enough filler players for the fixture")
+    ids            <- character(m)
+    ids[is_t1]     <- pids
+    ids[!is_t1]    <- fillers[seq_len(sum(!is_t1))]
+    st$picks <- data.frame(
+      overall    = seq_len(m),
+      player_id  = ids,
+      entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + seq_len(m),
+      stringsAsFactors = FALSE)
+  }
+  st
+}
+
+.s12_render <- function(st, snapshot = snap) {
+  p <- file.path(tempdir(), "warroom-s12", "draft.rds")
+  unlink(dirname(p), recursive = TRUE)
+  save_state(st, p)
+  out <- NULL
+  shiny::testServer(.s8_bake_server(snapshot, p, cfg), {
+    out <<- .strip_html(output$roster_table)
+  })
+  out
+}
+
+## HTML of the one .roster-group whose label div == `label`.
+.s12_group <- function(h, label) {
+  marker <- sprintf('<div class="roster-group-label">%s</div>', label)
+  i <- regexpr(marker, h, fixed = TRUE)
+  if (i < 0L) fail("s12: roster panel has no '", label, "' group: ", h)
+  rest  <- substring(h, i)
+  after <- substring(rest, nchar(marker) + 1L)
+  nxt   <- regexpr('<div class="roster-group-label">', after, fixed = TRUE)
+  if (nxt > 0L) substring(rest, 1L, nchar(marker) + nxt - 1L) else rest
+}
+
+## A filled row: <span class="slot">SLOT</span> then <span class="name">NAME</span>.
+.s12_filled <- function(h, slot, name) {
+  grepl(sprintf('<span class="slot">%s</span>[[:space:]]*<span class="name">%s</span>',
+                slot, name), h)
+}
+## An empty row: <span class="slot">SLOT</span> then <span class="empty">PLACEHOLDER</span>.
+.s12_empty <- function(h, slot, placeholder) {
+  grepl(sprintf('<span class="slot">%s</span>[[:space:]]*<span class="empty">%s</span>',
+                slot, placeholder), h, fixed = FALSE)
+}
+
+s12_name <- function(pid, snapshot = snap) {
+  snapshot$players$player[match(pid, snapshot$players$player_id)]
+}
+s12_nfl <- function(pid, snapshot = snap) {
+  snapshot$players$nfl_team[match(pid, snapshot$players$player_id)]
+}
+
+## (12a) Roster parcial: QB, 2 RB, 1 WR, 1 K.
+h12 <- .s12_render(.s12_state(c("SYN-QB-001", "SYN-RB-001", "SYN-RB-002",
+                                "SYN-WR-001", "SYN-K-001")))
+if (!grepl('class="roster-panel"', h12, fixed = TRUE)) fail("s12: no .roster-panel: ", h12)
+if (.html_count(h12, '<div class="roster-group">') != 3L) {
+  fail("s12: partial roster did not render 3 groups")
+}
+if (.html_count(h12, '<div class="roster-row') != sum(league$roster)) {
+  fail("s12: partial roster rows != sum(roster) = ", sum(league$roster))
+}
+g12t <- .s12_group(h12, "Titulares")
+if (!.s12_filled(g12t, "QB", s12_name("SYN-QB-001"))) fail("s12: QB slot not filled")
+if (!.s12_filled(g12t, "RB1", s12_name("SYN-RB-001"))) fail("s12: RB1 != highest-vor RB")
+if (!.s12_filled(g12t, "RB2", s12_name("SYN-RB-002"))) fail("s12: RB2 != 2nd RB")
+if (!.s12_filled(g12t, "WR1", s12_name("SYN-WR-001"))) fail("s12: WR1 not filled")
+if (!.s12_empty(g12t, "WR2", s12_open)) fail("s12: WR2 not '- aberto'")
+if (!.s12_empty(g12t, "TE", s12_open))  fail("s12: TE not '- aberto'")
+if (!.s12_filled(g12t, "K", s12_name("SYN-K-001"))) fail("s12: K slot not filled (pos-identity placement)")
+if (!.s12_empty(g12t, "DST", s12_open)) fail("s12: DST not '- aberto'")
+if (!.s12_empty(.s12_group(h12, "FLEX"), "FLEX", s12_open)) fail("s12: FLEX not '- aberto'")
+g12b <- .s12_group(h12, "Banco")
+if (.html_count(g12b, '<div class="roster-row') != 6L) fail("s12: Banco not 6 rows (K must not count as bench)")
+if (.html_count(g12b, sprintf('<span class="empty">%s</span>', s12_dash)) != 6L) {
+  fail("s12: Banco not 6 '-' rows")
+}
+## (12a) nfl_team present (real fixture always carries it): a filled row's meta
+## is "pos <mid> nfl_team".
+if (!grepl(sprintf('<span class="meta">QB %s %s</span>', s12_mid, s12_nfl("SYN-QB-001")),
+           h12, fixed = TRUE)) {
+  fail("s12: filled-row meta is not 'pos <mid> nfl_team': ", h12)
+}
+
+## (12b) Roster vazio: 8 Titulares + 1 FLEX all "- aberto", 6 Banco "-", 3
+## groups, total rows == sum(roster) == 15.
+h12e <- .s12_render(.s12_state(character(0)))
+if (.html_count(h12e, '<div class="roster-group">') != 3L) fail("s12: empty roster not 3 groups")
+if (.html_count(h12e, '<div class="roster-row') != sum(league$roster)) {
+  fail("s12: empty roster total rows != sum(roster): ", .html_count(h12e, '<div class="roster-row'))
+}
+if (.html_count(h12e, '<div class="roster-row') != 15L) fail("s12: initial league empty roster is not 15 rows")
+if (.html_count(h12e, sprintf('<span class="empty">%s</span>', s12_open)) != 9L) {
+  fail("s12: empty roster not 9 '- aberto' placeholders (8 Titulares + 1 FLEX)")
+}
+if (.html_count(h12e, sprintf('<span class="empty">%s</span>', s12_dash)) != 6L) {
+  fail("s12: empty roster Banco not 6 '-' placeholders")
+}
+for (lab in c("QB", "RB1", "RB2", "WR1", "WR2", "TE", "K", "DST")) {
+  if (!.s12_empty(.s12_group(h12e, "Titulares"), lab, s12_open)) {
+    fail("s12: empty roster Titulares slot ", lab, " is not '- aberto'")
+  }
+}
+if (grepl('class="name"', h12e, fixed = TRUE)) fail("s12: empty roster rendered a filled .name row")
+
+## (12c) 3rd RB -> FLEX, RB passed OUT of vor order; RB1/RB2 must still be the
+## two highest-vor RBs and the 3rd the FLEX.
+h12f <- .s12_render(.s12_state(c("SYN-RB-003", "SYN-RB-001", "SYN-RB-002")))
+g12ft <- .s12_group(h12f, "Titulares")
+if (!.s12_filled(g12ft, "RB1", s12_name("SYN-RB-001"))) fail("s12: RB1 not the highest-vor RB when drafted out of order")
+if (!.s12_filled(g12ft, "RB2", s12_name("SYN-RB-002"))) fail("s12: RB2 not the 2nd-highest-vor RB")
+if (!.s12_filled(.s12_group(h12f, "FLEX"), "FLEX", s12_name("SYN-RB-003"))) {
+  fail("s12: 3rd RB not placed in the FLEX row")
+}
+
+## (12d) K + DST drafted -> both in Titulares, neither in Banco; Banco 6 "-".
+h12k <- .s12_render(.s12_state(c("SYN-QB-001", "SYN-K-001", "SYN-DST-001")))
+g12kt <- .s12_group(h12k, "Titulares")
+if (!.s12_filled(g12kt, "K", s12_name("SYN-K-001")))     fail("s12: K not in Titulares")
+if (!.s12_filled(g12kt, "DST", s12_name("SYN-DST-001"))) fail("s12: DST not in Titulares")
+g12kb <- .s12_group(h12k, "Banco")
+if (grepl(s12_name("SYN-K-001"), g12kb, fixed = TRUE) ||
+    grepl(s12_name("SYN-DST-001"), g12kb, fixed = TRUE)) {
+  fail("s12: a placed K/DST leaked into the Banco group")
+}
+if (.html_count(g12kb, '<div class="roster-row') != 6L) fail("s12: Banco not 6 rows with K+DST placed")
+if (.html_count(g12kb, sprintf('<span class="empty">%s</span>', s12_dash)) != 6L) {
+  fail("s12: Banco not all '-' with K+DST placed")
+}
+
+## (12e) 2nd K -> 1st K slot takes the higher-vor K, the 2nd K shows on the
+## bench in a filled BN row.
+h12k2 <- .s12_render(.s12_state(c("SYN-K-001", "SYN-K-002")))
+if (!.s12_filled(.s12_group(h12k2, "Titulares"), "K", s12_name("SYN-K-001"))) {
+  fail("s12: K slot did not take the higher-vor K")
+}
+g12k2b <- .s12_group(h12k2, "Banco")
+if (!.s12_filled(g12k2b, "BN", s12_name("SYN-K-002"))) {
+  fail("s12: 2nd K not shown in a filled BN bench row")
+}
+if (grepl(sprintf('<span class="slot">K</span>[[:space:]]*<span class="name">%s</span>',
+                  s12_name("SYN-K-002")), h12k2)) {
+  fail("s12: 2nd K wrongly occupies the K starter slot")
+}
+
+## (12f) Over-draft of the bench: all starters + FLEX + 7 slot-BENCH players
+## that are not K/DST -> Banco shows 7 rows, none empty, none truncated.
+s12_over <- c("SYN-QB-001",
+              "SYN-RB-001", "SYN-RB-002", "SYN-RB-003",
+              "SYN-RB-004", "SYN-RB-005", "SYN-RB-006", "SYN-RB-007",
+              "SYN-WR-001", "SYN-WR-002",
+              "SYN-WR-003", "SYN-WR-004", "SYN-WR-005",
+              "SYN-TE-001")
+h12o  <- .s12_render(.s12_state(s12_over))
+g12ob <- .s12_group(h12o, "Banco")
+if (.html_count(g12ob, '<div class="roster-row') != 7L) {
+  fail("s12: over-drafted bench not 7 rows: ", .html_count(g12ob, '<div class="roster-row'))
+}
+if (grepl("roster-row--empty", g12ob, fixed = TRUE)) fail("s12: over-drafted bench has an empty row")
+if (grepl('class="empty"', g12ob, fixed = TRUE)) fail("s12: over-drafted bench has an empty-placeholder span")
+
+## (12g) nfl_team absent from the snapshot -> filled-row meta is the bare pos,
+## never "NA".
+snap12_nt <- snap
+snap12_nt$players$nfl_team <- NULL
+h12nt <- .s12_render(.s12_state(c("SYN-QB-001"), snap12_nt), snap12_nt)
+if (!grepl('<span class="meta">QB</span>', h12nt, fixed = TRUE)) {
+  fail("s12: nfl_team-less snapshot did not render a bare-pos meta: ", h12nt)
+}
+if (grepl(">NA<", h12nt, fixed = TRUE) || grepl("NA</span>", h12nt, fixed = TRUE)) {
+  fail("s12: roster panel emitted the string 'NA' for a missing nfl_team")
+}
+
+## (12h) Draft completo: 15 players fill every slot -> zero empty rows / zero
+## placeholders, no error.
+s12_full <- c("SYN-QB-001", "SYN-QB-002",
+              "SYN-RB-001", "SYN-RB-002", "SYN-RB-003", "SYN-RB-004", "SYN-RB-005",
+              "SYN-WR-001", "SYN-WR-002", "SYN-WR-003", "SYN-WR-004",
+              "SYN-TE-001", "SYN-TE-002",
+              "SYN-K-001", "SYN-DST-001")
+h12c <- .s12_render(.s12_state(s12_full))
+if (.html_count(h12c, '<div class="roster-row') != sum(league$roster)) {
+  fail("s12: completed roster row count != sum(roster)")
+}
+if (grepl("roster-row--empty", h12c, fixed = TRUE)) fail("s12: completed roster still has an empty row")
+if (grepl(s12_open, h12c, fixed = TRUE)) fail("s12: completed roster still shows '- aberto'")
+if (grepl('class="empty"', h12c, fixed = TRUE)) fail("s12: completed roster still shows an empty placeholder")
+
+## (12i) www/styles.css absent at runtime -> the panel still assembles with no
+## server error. Same swap-and-restore as the story 9 / 11 css-absent checks.
+s12_css_state <- .s12_state(c("SYN-QB-001", "SYN-RB-001"))
+s12_css_path  <- file.path(tempdir(), "warroom-s12css", "draft.rds")
+unlink(dirname(s12_css_path), recursive = TRUE)
+save_state(s12_css_state, s12_css_path)
+s12_css_bak <- file.path(tempdir(), "styles.css.s12bak")
+if (!file.copy("www/styles.css", s12_css_bak, overwrite = TRUE)) {
+  fail("s12: could not stage a backup of www/styles.css for the css-absent check")
+}
+s12_css_seen <- NULL
+s12_css_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s12_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s12_env))
+  srv <- s12_env$server
+  formals(srv)$snapshot   <- snap
+  formals(srv)$state_path <- s12_css_path
+  formals(srv)$config     <- cfg
+  shiny::testServer(srv, {
+    hh <- .strip_html(output$roster_table)
+    s12_css_seen <<- grepl('class="roster-panel"', hh, fixed = TRUE) &&
+      .html_count(hh, '<div class="roster-row') == sum(league$roster)
+  })
+  isTRUE(s12_css_seen)
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s12_css_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) fail("s12: www/styles.css not restored after the css-absent check")
+if (!isTRUE(s12_css_ok)) fail("s12: roster panel did not assemble with www/styles.css absent: ",
+                              attr(s12_css_ok, "msg"))
+
+## (12j) static UI + CSS + app.R analysis (Acceptance Criteria).
+ui12 <- as.character(htmltools::renderTags(ui)$html)
+if (!grepl('id="roster_table"', ui12, fixed = TRUE)) fail("s12: rendered ui has no id=\"roster_table\"")
+p_rt12 <- regexpr('id="roster_table"', ui12, fixed = TRUE)
+if (grepl("<table", substr(ui12, p_rt12, p_rt12 + 200L), fixed = TRUE)) {
+  fail("s12: roster_table renders a static <table>")
+}
+for (id in c("status_strip", "recs_note", "recs_table", "recs_pos_filter",
+             "recent_picks_table", "available_table", "player_choice",
+             "draft_btn", "undo_btn", "pos_filter")) {
+  if (!grepl(id, ui12, fixed = TRUE)) fail("s12: rendered ui lost the story 8-11 id '", id, "'")
+}
+css12 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+css12_code <- gsub("(?s)/\\*.*?\\*/", "", css12, perl = TRUE)
+for (tok in c(".roster-panel", ".roster-group", ".roster-row")) {
+  if (!grepl(tok, css12_code, fixed = TRUE)) fail("s12: styles.css missing '", tok, "'")
+}
+slot_rule12 <- regmatches(
+  css12_code, regexpr("\\.roster-row\\s+\\.slot\\s*\\{[^}]*\\}", css12_code, perl = TRUE))
+if (length(slot_rule12) != 1L) fail("s12: no '.roster-row .slot { ... }' rule in styles.css")
+if (grepl("var\\(--action\\)", slot_rule12)) {
+  fail("s12: '.roster-row .slot' uses var(--action) -- green is reserved (DESIGN.md Colors)")
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css12_code, perl = TRUE)) {
+  fail("s12: styles.css pulls a remote asset -- network on the live path")
+}
+app12 <- readLines("app.R", warn = FALSE)
+if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app12))) {
+  fail("s12: app.R introduced a forbidden JS / theming dependency")
+}
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app12))) fail("s12: app.R names an RNG symbol")
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.file\\(", app12))) {
+  fail("s12: app.R names a network / scrape symbol")
+}
+app12_code <- sub("#.*$", "", app12)
+if (any(grepl("^\\s*(roster_slots|recommend_players)\\s*<-", app12_code))) {
+  fail("s12: app.R redefines roster_slots / recommend_players")
+}
+if (sum(grepl("recommend_players\\(", app12_code)) != 1L) {
+  fail("s12: recommend_players() not called exactly once in app.R code")
+}
+
+cat("story 12 offline checks OK -- grouped roster panel renderUI over rosters + roster_slots\n")
 
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript
