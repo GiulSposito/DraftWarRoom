@@ -10,13 +10,21 @@
  * docs/design/mockups/live-war-room.html is the adapted reference. Deliberate
  * deviations, all owned by later stories:
  *   - no bordered "panel" component, no workspace/wide layout grid -> story 14 (B1);
- *   - no position badges, no smart-list treatment  -> story 11 (A3);
  *   - the mockup's off-token body backdrop (#06090d) and .window frame are
  *     dropped -- fluidPage has no .window wrapper.
  *
  * Story 10 (A2) adds the sticky .status-strip below: overall pick in
  * typography.display, action green on the live pick, a distinct bordered
  * treatment when the draft is complete.
+ *
+ * Story 11 (A3) adds the .smart-list block: a short ranked candidate list
+ * (rank / name+pos / tier / score / one-line reason). Row 1 is emphasised by
+ * order and weight; the action-green rank marker (.candidate--top) appears
+ * only on the unfiltered list, where row 1 is the pick Enter would register
+ * -- under a position badge row 1 is just "best <POS>" (.candidate--first,
+ * weight only). The .recs-filters badges mark the selected filter with a
+ * raised ground and an ink border -- never colour alone, never the focus-blue
+ * ring. Grid mirrors docs/design/mockups/live-war-room.html.
  *
  * Load order: Shiny appends this UI-level tags$head <link> after the registered
  * Bootstrap dependency CSS, so these rules win on equal specificity; the few
@@ -218,6 +226,193 @@ body,
   margin-top: var(--space-1);
   color: var(--ink-muted);
   font-size: 11px;
+}
+
+/* --- smart list of candidates (story 11, A3) --------------------------- */
+/* DESIGN.md components.smart-list / candidate-row / candidate-active +
+ * §Components "Lista inteligente"; the .smart-list / .table-head / .candidate
+ * block of docs/design/mockups/live-war-room.html is the adapted reference
+ * (grid 30px minmax(0,1fr) 38px 42px). Colours / typography / radius / spacing
+ * are DESIGN.md tokens; the action-green rank marker is used only on the
+ * unfiltered list's row 1, never as decoration. */
+
+.recs-filters {
+  margin-bottom: var(--space-2);
+}
+
+/* radioButtons(inline=TRUE) renders
+ * .recs-filters > .form-group > .shiny-options-group > label.radio-inline;
+ * the flex row has to live on .shiny-options-group to actually reach the
+ * badges, and the Bootstrap .form-group bottom margin is zeroed here. */
+.recs-filters .form-group {
+  margin-bottom: 0;
+}
+
+.recs-filters .shiny-options-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* the group label is an accessible name only -- visually hidden. */
+.recs-filters .control-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+/* position badge -- discrete, DESIGN.md typography.label, radius-sm (not a
+ * pill). The <label> wraps the radio input, which is visually removed so the
+ * pill is the whole control; the label keeps it clickable and keyboard-
+ * operable. */
+.recs-filters .radio-inline {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.recs-filters .radio-inline + .radio-inline {
+  margin-left: 0;
+}
+
+.recs-filters .radio-inline input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+/* selected badge -- raised ground plus an ink border: distinct from both the
+ * unselected badge and the blue keyboard-focus ring (DESIGN.md §Colors: state
+ * is never communicated by colour alone). The real :focus outline rule is
+ * left untouched so focus and selection stay visually separate. */
+.recs-filters .radio-inline:has(input:checked) {
+  background: var(--surface-raised);
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.smart-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) 0;
+}
+
+.smart-list-head,
+.candidate {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 38px 42px;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+}
+
+.smart-list-head {
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.smart-list-head span:nth-child(3),
+.smart-list-head span:nth-child(4),
+.candidate .tier,
+.candidate .score {
+  text-align: right;
+}
+
+.candidate {
+  min-height: 34px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.candidate:last-child {
+  border-bottom: 0;
+}
+
+.candidate .rank {
+  color: var(--ink-muted);
+}
+
+/* .name is the flex row; only .name-text truncates, so a long player name
+ * never ellipsizes .pos away. */
+.candidate .name {
+  display: flex;
+  gap: var(--space-1);
+  align-items: baseline;
+  min-width: 0;
+}
+
+.candidate .name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate .pos {
+  flex: none;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.candidate .tier,
+.candidate .score {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.candidate .reason {
+  grid-column: 2 / -1;
+  margin-top: var(--space-1);
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* nº 1: highlighted by order + typographic weight (DESIGN.md §Components
+ * "Lista inteligente"), never a big card. */
+.candidate--top,
+.candidate--first {
+  font-weight: 700;
+}
+
+/* .candidate--top only on the unfiltered list: raised ground + the sole
+ * action-green rank marker -- the row Enter would register. */
+.candidate--top {
+  background: var(--surface-raised);
+}
+
+.candidate--top .rank {
+  color: var(--action);
+  font-weight: 700;
+}
+
+/* panel frame kept even when a filter matches nothing. */
+.smart-list-empty {
+  margin: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-muted);
 }
 
 /* --- section headings ------------------------------------------------------ */

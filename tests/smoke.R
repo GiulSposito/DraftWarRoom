@@ -2159,6 +2159,264 @@ if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.fil
 
 cat("story 10 offline checks OK -- fixed status strip renderUI over derived views\n")
 
+## --- story 11: smart candidate list (offline, renderUI over recs()) --------
+## app.R swaps tableOutput("recs_table") for uiOutput("recs_table") plus a
+## radioButtons("recs_pos_filter") badge row. output$recs_table is a renderUI
+## that only formats the frame recommend_players() already returned -- no column
+## or row order recomputed -- and the position badge subsets the cached recs()
+## reactive, never re-calling recommend_players(). Reuses `fail`, `ui`, `snap`,
+## `team_order`, `cfg`, `league`, `.s8_bake_server`, `.strip_html`.
+
+.s11_count <- function(h, needle) {
+  m <- gregexpr(needle, h, fixed = TRUE)[[1]]
+  if (length(m) == 1L && m[1] == -1L) 0L else length(m)
+}
+
+## on-turn mid-draft: 23 picks -> overall 24 belongs to Team 01 (the user).
+s11_path <- file.path(tempdir(), "warroom-s11", "draft.rds")
+unlink(dirname(s11_path), recursive = TRUE)
+mid11 <- new_draft(snap, team_order, "Team 01", league = league)
+for (i in 1:23) mid11 <- record_pick(mid11, snap$players$player_id[i], snap)
+save_state(mid11, s11_path)
+term11 <- recommend_players(mid11, snap)
+if (nrow(term11) < 5L) fail("s11: fixture mid-draft recs has < 5 rows -- precondition")
+if (isTRUE(attr(term11, "off_turn"))) fail("s11: mid11 should be the user's own pick")
+rb_players <- term11$player[term11$pos == "RB"]
+if (!length(rb_players)) fail("s11: fixture mid-draft recs has no RB row -- precondition")
+absent_pos <- setdiff(.warroom_pos_levels, term11$pos)[1]
+if (is.na(absent_pos)) fail("s11: fixture recs cover every position -- need one absent")
+## rank-01 nfl_team comes from the snapshot join, not the recs frame.
+pl11_1 <- snap$players[match(term11$player_id[1], snap$players$player_id), ]
+if (is.na(pl11_1$nfl_team) || !nzchar(pl11_1$nfl_team)) {
+  fail("s11: fixture rank-01 player has no nfl_team -- precondition")
+}
+
+shiny::testServer(.s8_bake_server(snap, s11_path, cfg), {
+  ## default badge "Todos": full smart list, ranked, no 1 highlighted.
+  h <- .strip_html(output$recs_table)
+  if (!grepl('class="smart-list"', h, fixed = TRUE)) fail("s11: no .smart-list rendered: ", h)
+  if (!grepl('role="list"', h, fixed = TRUE)) fail("s11: .smart-list missing role=list")
+  if (!grepl("aria-label=\"Recomenda", h, fixed = TRUE)) fail("s11: .smart-list missing aria-label")
+  n_cand <- .s11_count(h, 'class="candidate')
+  if (n_cand != nrow(term11)) {
+    fail("s11: rendered ", n_cand, " candidate rows, recommend_players() returned ", nrow(term11))
+  }
+  if (n_cand < 5L) fail("s11: fewer than 5 candidate rows rendered")
+  if (.s11_count(h, "candidate--top") != 1L) fail("s11: expected exactly one .candidate--top under Todos")
+  if (.s11_count(h, "candidate--first") != 0L) fail("s11: candidate--first present under Todos")
+  ## rank-01 shows pos followed by the snapshot nfl_team (P1: joined, not the frame).
+  if (!grepl(sprintf('class="pos">%s %s<', term11$pos[1], pl11_1$nfl_team), h, fixed = TRUE)) {
+    fail("s11: rank-01 pos cell does not show 'pos nfl_team': ", h)
+  }
+  if (!grepl(">01<", h, fixed = TRUE) || !grepl(">02<", h, fixed = TRUE)) {
+    fail("s11: ranks 01/02 not rendered")
+  }
+  if (!grepl(term11$player[1], h, fixed = TRUE)) fail("s11: top player name missing")
+  if (!grepl(term11$reason[1], h, fixed = TRUE)) fail("s11: top reason missing / altered")
+  if (!grepl(sprintf(">%.1f<", term11$decision_score[1]), h, fixed = TRUE)) {
+    fail("s11: top decision_score not rendered to 1 decimal")
+  }
+  if (regexpr(term11$player[1], h, fixed = TRUE) >
+      regexpr(term11$player[2], h, fixed = TRUE)) {
+    fail("s11: smart list reordered rows relative to recommend_players()")
+  }
+
+  ## position badge: subset recs(), never re-call recommend_players().
+  before <- recs()
+  session$setInputs(recs_pos_filter = "RB")
+  if (!identical(recs(), before) || !identical(recs(), term11)) {
+    fail("s11: recs() frame changed when the position badge changed")
+  }
+  h_rb <- .strip_html(output$recs_table)
+  if (.s11_count(h_rb, 'class="candidate') != length(rb_players)) {
+    fail("s11: RB badge did not narrow the list to the RB rows of recs()")
+  }
+  for (p in rb_players) if (!grepl(p, h_rb, fixed = TRUE)) fail("s11: RB row dropped: ", p)
+  non_rb <- term11$player[term11$pos != "RB"]
+  if (length(non_rb) && grepl(non_rb[1], h_rb, fixed = TRUE)) {
+    fail("s11: RB badge leaked a non-RB row")
+  }
+  if (!grepl(">01<", h_rb, fixed = TRUE)) fail("s11: filtered list not re-ranked from 01")
+  ## P11: no false action-green "Enter will register" marker on a filtered list.
+  if (.s11_count(h_rb, "candidate--top") != 0L) fail("s11: candidate--top present under the RB filter")
+  if (.s11_count(h_rb, "candidate--first") != 1L) fail("s11: expected one candidate--first under the RB filter")
+
+  ## badge with no matching row -> empty text, badges still operable.
+  session$setInputs(recs_pos_filter = absent_pos)
+  h_none <- .strip_html(output$recs_table)
+  if (grepl('class="candidate', h_none, fixed = TRUE)) fail("s11: no-match badge still rendered rows")
+  if (!grepl(sprintf("Nenhum candidato %s nas recomenda", absent_pos), h_none)) {
+    fail("s11: no-match empty text wrong: ", h_none)
+  }
+
+  session$setInputs(recs_pos_filter = "Todos")
+  if (.s11_count(.strip_html(output$recs_table), 'class="candidate') != nrow(term11)) {
+    fail("s11: returning to Todos did not restore the full list")
+  }
+})
+
+## (11d) recs() empty (completed draft) -> "Nenhum candidato disponivel.", 0 rows.
+s11f_path <- file.path(tempdir(), "warroom-s11f", "draft.rds")
+unlink(dirname(s11f_path), recursive = TRUE)
+full11 <- new_draft(snap, team_order, "Team 01", league = league)
+full11$picks <- data.frame(
+  overall = 1:180, player_id = snap$players$player_id[1:180],
+  entered_at = as.POSIXct("2026-09-01 12:00:00", tz = "UTC") + 1:180,
+  stringsAsFactors = FALSE)
+save_state(full11, s11f_path)
+shiny::testServer(.s8_bake_server(snap, s11f_path, cfg), {
+  if (nrow(recs()) != 0L) fail("s11: completed-draft recs() not empty -- precondition")
+  h <- .strip_html(output$recs_table)
+  if (grepl('class="candidate', h, fixed = TRUE)) fail("s11: completed draft rendered candidate rows")
+  if (!grepl("Nenhum candidato dispon", h)) fail("s11: completed-draft empty text wrong: ", h)
+})
+
+## (11e) optional columns absent from the synthetic snapshot: `tier` -> em-dash
+## (never "NA"); `nfl_team` -> bare pos (no separator, no "NA").
+s11n_path <- file.path(tempdir(), "warroom-s11n", "draft.rds")
+unlink(dirname(s11n_path), recursive = TRUE)
+snap_nt <- snap
+snap_nt$players$tier <- NULL
+snap_nt$players$nfl_team <- NULL
+mid_nt <- new_draft(snap_nt, team_order, "Team 01", league = league)
+for (i in 1:23) mid_nt <- record_pick(mid_nt, snap_nt$players$player_id[i], snap_nt)
+save_state(mid_nt, s11n_path)
+term_nt <- recommend_players(mid_nt, snap_nt)
+if (!all(is.na(term_nt$tier))) fail("s11: dropping snapshot tier did not null the recs tier column")
+shiny::testServer(.s8_bake_server(snap_nt, s11n_path, cfg), {
+  h <- .strip_html(output$recs_table)
+  if (!grepl('class="smart-list"', h, fixed = TRUE)) fail("s11: tier-less snapshot broke the smart list")
+  if (grepl(">NA<", h, fixed = TRUE) || grepl("NA</span>", h, fixed = TRUE)) {
+    fail("s11: smart list emitted the string 'NA' for a missing optional field: ", h)
+  }
+  if (!grepl("\u2014", h, fixed = TRUE)) fail("s11: missing tier not shown as the em-dash")
+  ## rank-01 pos cell is the bare position -- no trailing separator / team.
+  if (!grepl(sprintf('class="pos">%s</span>', term_nt$pos[1]), h, fixed = TRUE)) {
+    fail("s11: nfl_team-less snapshot did not render a bare pos cell: ", h)
+  }
+})
+
+## (11g) off-turn (matrix row): an opponent is on the clock but recs() is
+## non-empty -> the smart list renders in full, output$recs_note carries the
+## warning, and rank 01's reason keeps the "[assumindo seu proximo pick" prefix
+## .warroom_recs_result() adds off-turn. 15 picks -> overall 16 is an opponent's
+## (same fixture shape as 8e).
+s11o_path <- file.path(tempdir(), "warroom-s11o", "draft.rds")
+unlink(dirname(s11o_path), recursive = TRUE)
+off11 <- new_draft(snap, team_order, "Team 01", league = league)
+for (i in 1:15) off11 <- record_pick(off11, snap$players$player_id[i], snap)
+save_state(off11, s11o_path)
+term_off <- recommend_players(off11, snap)
+if (!isTRUE(attr(term_off, "off_turn"))) fail("s11: 15-pick fixture is not off-turn -- precondition")
+if (nrow(term_off) == 0L) fail("s11: off-turn recs empty -- precondition")
+if (!grepl("[assumindo seu proximo pick", term_off$reason[1], fixed = TRUE)) {
+  fail("s11: .warroom_recs_result() did not prefix the off-turn reason -- precondition")
+}
+shiny::testServer(.s8_bake_server(snap, s11o_path, cfg), {
+  if (!isTRUE(attr(recs(), "off_turn"))) fail("s11: server recs() lost the off_turn attr")
+  if (!grepl("nao esta na vez", output$recs_note, fixed = TRUE)) {
+    fail("s11: off-turn recs_note not rendered: ", output$recs_note)
+  }
+  h <- .strip_html(output$recs_table)
+  if (!grepl('class="smart-list"', h, fixed = TRUE)) fail("s11: off-turn smart list not rendered: ", h)
+  if (.s11_count(h, 'class="candidate') != nrow(term_off)) {
+    fail("s11: off-turn smart list row count differs from recommend_players()")
+  }
+  if (!grepl("[assumindo seu proximo pick", h, fixed = TRUE)) {
+    fail("s11: off-turn rank 01 reason lost the assumes-you-pick-now prefix: ", h)
+  }
+})
+
+## (11h) www/styles.css absent at runtime (matrix row): the smart list still
+## assembles with no server error. Same swap-and-restore pattern as the story 9
+## row-3 check -- the `finally` puts www/styles.css back even if the body throws,
+## and the result is captured (not asserted inside) so fail()'s quit() cannot
+## skip the restore.
+s11css_path <- file.path(tempdir(), "warroom-s11css", "draft.rds")
+unlink(dirname(s11css_path), recursive = TRUE)
+s11css_state <- new_draft(snap, team_order, "Team 01", league = league)
+for (i in 1:23) s11css_state <- record_pick(s11css_state, snap$players$player_id[i], snap)
+save_state(s11css_state, s11css_path)
+s11_css_bak <- file.path(tempdir(), "styles.css.s11bak")
+if (!file.copy("www/styles.css", s11_css_bak, overwrite = TRUE)) {
+  fail("s11: could not stage a backup of www/styles.css for the css-absent check")
+}
+s11_css_seen <- NULL
+s11_css_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s11_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s11_env))
+  srv <- s11_env$server
+  formals(srv)$snapshot   <- snap
+  formals(srv)$state_path <- s11css_path
+  formals(srv)$config     <- cfg
+  shiny::testServer(srv, {
+    hh <- .strip_html(output$recs_table)
+    s11_css_seen <<- grepl('class="smart-list"', hh, fixed = TRUE) &&
+      .s11_count(hh, 'class="candidate') > 0L
+  })
+  isTRUE(s11_css_seen)
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s11_css_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) fail("s11: www/styles.css not restored after the css-absent check")
+if (!isTRUE(s11_css_ok)) {
+  fail("s11: smart list did not assemble with www/styles.css absent: ", attr(s11_css_ok, "msg"))
+}
+
+## (11f) static UI + CSS + app.R analysis (Acceptance Criteria).
+ui11 <- as.character(htmltools::renderTags(ui)$html)
+if (!grepl('id="recs_table"', ui11, fixed = TRUE)) fail("s11: rendered ui has no id=\"recs_table\"")
+if (!grepl('id="recs_pos_filter"', ui11, fixed = TRUE)) fail("s11: rendered ui has no id=\"recs_pos_filter\"")
+p_rt <- regexpr('id="recs_table"', ui11, fixed = TRUE)
+if (grepl("<table", substr(ui11, p_rt, p_rt + 200L), fixed = TRUE)) {
+  fail("s11: recs_table renders a static <table>")
+}
+for (id in c("status_strip", "recs_note", "roster_table", "recent_picks_table",
+             "available_table", "player_choice", "draft_btn", "undo_btn",
+             "pos_filter")) {
+  if (!grepl(id, ui11, fixed = TRUE)) fail("s11: rendered ui lost the story 8-10 id '", id, "'")
+}
+## P7: the radio group has a real (visually-hidden) accessible name.
+if (!grepl('id="recs_pos_filter-label"', ui11, fixed = TRUE) ||
+    !grepl("Filtrar recomenda", ui11, fixed = TRUE)) {
+  fail("s11: recs_pos_filter has no non-empty <label> for its accessible name")
+}
+css11 <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+css11_code <- gsub("(?s)/\\*.*?\\*/", "", css11, perl = TRUE)
+for (tok in c(".smart-list", ".candidate", ".candidate--top", ".candidate--first",
+              ".recs-filters", ".shiny-options-group", "name-text")) {
+  if (!grepl(tok, css11_code, fixed = TRUE)) fail("s11: styles.css missing '", tok, "'")
+}
+## P5: the selected-badge treatment must not reuse the focus-blue outline.
+if (grepl(":has\\(input:checked\\)[^}]*outline", css11_code, perl = TRUE) ||
+    grepl("input:checked \\+ span[^}]*outline", css11_code, perl = TRUE)) {
+  fail("s11: selected badge reuses an outline -- indistinguishable from the focus ring")
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css11_code, perl = TRUE)) {
+  fail("s11: styles.css pulls a remote asset -- network on the live path")
+}
+app11 <- readLines("app.R", warn = FALSE)
+if (any(grepl("bslib|sass|includeCSS|shinyjs|tags\\$script|Shiny\\.setInputValue", app11))) {
+  fail("s11: app.R introduced a forbidden JS / theming dependency")
+}
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app11))) fail("s11: app.R names an RNG symbol")
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.file\\(", app11))) {
+  fail("s11: app.R names a network / scrape symbol")
+}
+app11_code <- sub("#.*$", "", app11)
+if (any(grepl("^\\s*recommend_players\\s*<-", app11_code))) fail("s11: app.R redefines recommend_players")
+n_rp_calls <- sum(grepl("recommend_players\\(", app11_code))
+if (n_rp_calls != 1L) {
+  fail("s11: recommend_players() called ", n_rp_calls, " times in app.R code (expected 1)")
+}
+
+cat("story 11 offline checks OK -- smart candidate list renderUI + position badges\n")
+
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript
 ## scripts/prepare.R` with no --force must refuse. The guard is placed above the

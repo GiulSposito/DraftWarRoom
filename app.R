@@ -64,7 +64,12 @@ ui <- fluidPage(
   fluidRow(
     column(12, h4("Recomendacoes"),
            div(class = "recs-note", textOutput("recs_note")),
-           tableOutput("recs_table"))
+           div(class = "recs-filters",
+               radioButtons("recs_pos_filter",
+                            "Filtrar recomendações por posição",
+                            choices = c("Todos", .warroom_pos_levels),
+                            selected = "Todos", inline = TRUE)),
+           uiOutput("recs_table"))
   ),
 
   fluidRow(
@@ -257,11 +262,70 @@ server <- function(input, output, session, snapshot = NULL, state_path = NULL,
     else ""
   })
 
-  output$recs_table <- renderTable({
+  ## Smart list of candidates (story 11, A3). Pure formatting over the frame
+  ## recommend_players() already returned -- no column is recomputed and the
+  ## row order is never touched (DESIGN.md "Lista inteligente"). The position
+  ## badge subsets the cached recs() reactive; recommend_players() is not
+  ## re-called on a filter change (AGENTS.md performance guardrail).
+  output$recs_table <- renderUI({
     r <- recs()
-    cols <- c("player", "pos", "points", "vor", "tier", "adp",
-             "p_next", "wait_cost", "decision_score", "label", "reason")
-    r[, intersect(cols, names(r)), drop = FALSE]
+    if (nrow(r) == 0L) {
+      return(tags$p(class = "smart-list-empty", "Nenhum candidato disponível."))
+    }
+    pos     <- input$recs_pos_filter %||% "Todos"
+    all_pos <- identical(pos, "Todos")
+    if (!all_pos) {
+      r <- r[!is.na(r$pos) & r$pos == pos, , drop = FALSE]
+    }
+    if (nrow(r) == 0L) {
+      return(tags$p(class = "smart-list-empty",
+                    sprintf("Nenhum candidato %s nas recomendações.", pos)))
+    }
+    dash <- "—"
+    ## nfl_team is an optional snapshot field (R/projections.R -- only
+    ## player_id/player/pos/points are required) and is not part of the
+    ## recommend_players() frame; join it from the snapshot the same way
+    ## output$recent_picks_table and the status strip do. Column absent ->
+    ## bare pos, no separator, no NA.
+    has_nfl <- "nfl_team" %in% names(snapshot$players)
+    pl <- snapshot$players[match(r$player_id, snapshot$players$player_id), ,
+                           drop = FALSE]
+    rows <- lapply(seq_len(nrow(r)), function(i) {
+      ## tier is the numeric source tier, rendered as it came; NA -> dash.
+      tier_txt   <- if (is.na(r$tier[i])) dash else as.character(r$tier[i])
+      score_txt  <- if (is.na(r$decision_score[i])) dash
+                    else sprintf("%.1f", r$decision_score[i])
+      reason_txt <- if (is.na(r$reason[i]) || !nzchar(r$reason[i])) dash
+                    else r$reason[i]
+      pos_txt <- if (is.na(r$pos[i])) "" else r$pos[i]
+      nfl     <- if (has_nfl) pl$nfl_team[i] else NA_character_
+      if (nzchar(pos_txt) && !is.na(nfl) && nzchar(nfl)) {
+        pos_txt <- paste(pos_txt, nfl)
+      }
+      ## nº 1 marker: the action-green rank only when the list is unfiltered
+      ## (then row 1 is the pick Enter would register). Under a position badge
+      ## row 1 is only "best <POS>" -- emphasised by weight, not colour.
+      row_cls <- if (i != 1L) "candidate"
+                 else if (all_pos) "candidate candidate--top"
+                 else "candidate candidate--first"
+      tags$div(
+        class = row_cls,
+        role = "listitem",
+        tags$span(class = "rank", sprintf("%02d", i)),
+        tags$span(class = "name",
+                  tags$span(class = "name-text", r$player[i]),
+                  tags$span(class = "pos", pos_txt)),
+        tags$span(class = "tier", tier_txt),
+        tags$span(class = "score", score_txt),
+        tags$span(class = "reason", reason_txt)
+      )
+    })
+    tags$div(class = "smart-list", role = "list",
+             `aria-label` = "Recomendações de pick",
+      tags$div(class = "smart-list-head", role = "presentation",
+               tags$span("#"), tags$span("Jogador"),
+               tags$span("Tier"), tags$span("Score")),
+      rows)
   })
 
   output$roster_table <- renderTable({
