@@ -1,0 +1,319 @@
+/* www/styles.css -- dark terminal shell for the thin Shiny war room (story 9, A1).
+ *
+ * Appearance only. This is a static stylesheet served from www/; it overlays a
+ * full dark restyle on the default fluidPage Bootstrap chrome, visually
+ * suppressing the light default without touching page structure, outputs,
+ * reactives, core functions or RDS contracts.
+ *
+ * Color / typography / rounded.sm / spacing / focus-ring values are taken
+ * verbatim from the frontmatter of docs/design/DESIGN.md; the <style> block of
+ * docs/design/mockups/live-war-room.html is the adapted reference. Deliberate
+ * deviations, all owned by later stories, not A1:
+ *   - no bordered "panel" component, no sticky header, no typography.display
+ *     status strip     -> stories 10 (A2) and 14 (B1);
+ *   - no position badges, no smart-list treatment  -> story 11 (A3);
+ *   - the mockup's off-token body backdrop (#06090d) and .window frame are
+ *     dropped -- fluidPage has no .window wrapper.
+ *
+ * Load order: Shiny appends this UI-level tags$head <link> after the registered
+ * Bootstrap dependency CSS, so these rules win on equal specificity; the few
+ * !important flags below are only where a Bootstrap rule is more specific.
+ *
+ * No bslib / sass / bs_theme, no new renv package -- just this .css.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --canvas: #0B0F14;
+  --surface: #121922;
+  --surface-raised: #18222E;
+  --border: #293746;
+  --ink: #E7EDF3;
+  --ink-muted: #91A0AF;
+  --action: #57D68D;
+  --action-ink: #06120B;
+  --focus: #67B7FF;
+  --warning: #F2C14E;
+  --danger: #FF6B6B;
+
+  --radius-sm: 2px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --gutter: 12px;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* --- base surfaces ------------------------------------------------------- */
+
+body,
+.container-fluid {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.container-fluid {
+  padding: var(--space-4);
+}
+
+/* fluidRow carries Bootstrap's -15px side margins; zero them so the 16px
+ * container pad is the only edge inset and no sub-pixel horizontal scrollbar
+ * appears in a narrow docked window. */
+.row {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* --- lean operational header (replaces the old titlePanel <h2>) --------- */
+/* DESIGN.md typography.label: 11px / 700 / uppercase / letter-spacing .06em,
+ * rendered in ink-muted. "Nao usar titulos grandes." */
+
+.app-header {
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+/* --- section headings ------------------------------------------------------ */
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+h3 {
+  font-size: 16px;
+  letter-spacing: 0.02em;
+}
+
+h4 {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+/* --- dense tables with thin borders -------------------------------------- */
+
+table,
+.table,
+.shiny-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+table th,
+table td,
+.table > thead > tr > th,
+.table > tbody > tr > td,
+.table > tbody > tr > th {
+  border: 1px solid var(--border) !important;
+  padding: var(--space-2) !important;
+  vertical-align: top;
+}
+
+table th,
+.table > thead > tr > th {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--surface-raised);
+}
+
+.table > tbody > tr > td {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* renderTable() emits <table class="table shiny-table ..."> without
+ * table-hover / table-striped, so key the hover off .shiny-table directly. */
+.shiny-table tbody tr:hover > td {
+  background: var(--surface-raised);
+}
+
+/* --- buttons ----------------------------------------------------------- */
+
+.btn {
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.btn:hover,
+.btn:focus,
+.btn:active {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.btn-primary {
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--action-ink);
+  font-weight: 700;
+}
+
+.btn-primary:hover,
+.btn-primary:focus,
+.btn-primary:active,
+.btn-primary:active:hover {
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--action-ink);
+}
+
+/* --- form fields + selectize ------------------------------------------- */
+
+label,
+.control-label {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.form-control,
+.selectize-input {
+  background: var(--canvas);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 14px;
+  box-shadow: none;
+}
+
+.form-control::placeholder {
+  color: var(--ink-muted);
+}
+
+.selectize-control .selectize-input input {
+  color: var(--ink);
+  font-family: var(--mono);
+}
+
+.selectize-input.focus {
+  border-color: var(--focus);
+  box-shadow: none;
+}
+
+.selectize-input .item {
+  color: var(--ink);
+}
+
+.selectize-dropdown {
+  background: var(--surface-raised);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+.selectize-dropdown .option {
+  color: var(--ink);
+}
+
+/* mouse hover on an option -- without this it falls through to Bootstrap's
+ * light default on the dark dropdown. */
+.selectize-dropdown .option:hover,
+.selectize-dropdown [data-selectable]:hover {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.selectize-dropdown .active {
+  background: var(--surface-raised);
+  color: var(--ink);
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* --- notifications ---------------------------------------------------- */
+
+.shiny-notification {
+  background: var(--surface-raised);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.shiny-notification-warning {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.shiny-notification-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* a render error (server stop() path) must not paint a light default block on
+ * the dark canvas. */
+.shiny-output-error,
+.shiny-output-error-validation {
+  background: var(--surface-raised);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+/* --- keyboard focus ring (DESIGN.md components.focus-ring: 2px, offset 2px) */
+
+a:focus,
+button:focus,
+input:focus,
+select:focus,
+textarea:focus,
+.btn:focus,
+.form-control:focus,
+.selectize-input.focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* --- off-turn recommendation note (was an inline red style=) ---------- */
+
+.recs-note {
+  color: var(--danger);
+  font-weight: 700;
+}

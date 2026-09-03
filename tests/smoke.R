@@ -1879,6 +1879,107 @@ if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|RCurl::|downlo
 
 cat("story 8 offline checks OK -- app.R server() + roster_slots() + terminal/Shiny equivalence\n")
 
+## --- story 9: dark terminal shell (offline, CSS + header only) -----------
+## www/styles.css is a static dark-shell stylesheet built from the DESIGN.md
+## tokens; app.R loads it via tags$head(tags$link(...)) and swaps the big
+## titlePanel for a lean one-line header. Appearance only -- every story-8
+## outputId / inputId and the whole fluidPage tree survive as-is, and no new
+## render, reactive, core call, RNG symbol or theming package is introduced.
+## Reuses `fail` and the `ui` object from story 8's source("app.R").
+
+if (!file.exists("www/styles.css")) fail("s9: www/styles.css missing")
+css9 <- readLines("www/styles.css", warn = FALSE)
+if (length(css9) == 0L || !any(nzchar(trimws(css9)))) fail("s9: www/styles.css is empty")
+css9_txt <- paste(css9, collapse = "\n")
+for (tok in c("#0B0F14", "#57D68D", "#67B7FF", "ui-monospace", "2px")) {
+  if (!grepl(tok, css9_txt, fixed = TRUE)) fail("s9: styles.css missing token '", tok, "'")
+}
+if (!grepl("color-scheme", css9_txt, fixed = TRUE)) fail("s9: styles.css missing color-scheme")
+if (!grepl(":root", css9_txt, fixed = TRUE)) fail("s9: styles.css has no :root token block")
+
+## www/styles.css is now on the live-draft path -- AGENTS.md forbids any network
+## fetch there. No @import, no url(http...), no remote font src.
+if (grepl("@import|url\\(\\s*['\"]?https?:|src:\\s*url\\(\\s*['\"]?https?:",
+          css9_txt, perl = TRUE)) {
+  fail("s9: styles.css pulls a remote asset (@import / url(http...)) -- network on the live path")
+}
+
+app9 <- readLines("app.R", warn = FALSE)
+app9_txt <- paste(app9, collapse = "\n")
+if (!grepl("tags\\$head\\(", app9_txt) || !grepl('href = "styles\\.css"|href="styles\\.css"', app9_txt)) {
+  fail("s9: app.R does not load styles.css via tags$head(tags$link(...))")
+}
+if (any(grepl("titlePanel\\(", app9)))          fail("s9: app.R still uses titlePanel")
+if (any(grepl('style *= *"[^"]*color: *#[bB]00', app9))) {
+  fail("s9: app.R still uses the inline recs-note color style")
+}
+if (any(grepl("bslib|sass|bs_theme|includeCSS|shinythemes", app9))) {
+  fail("s9: app.R introduced a forbidden theming dependency")
+}
+
+## htmltools hoists a nested tags$head into renderTags(ui)$head (exactly what
+## Shiny drops into the served <head>); the fluidPage body stays in $html. Both
+## halves of as.character(ui) are covered by concatenating them.
+ui9_parts <- htmltools::renderTags(ui)
+ui9 <- paste(as.character(ui9_parts$head), as.character(ui9_parts$html),
+             as.character(ui), sep = "\n")
+if (!grepl('href="styles.css"', ui9, fixed = TRUE)) {
+  fail("s9: rendered ui <head> does not <link> styles.css")
+}
+## titlePanel() also injected <title windowTitle>; the plain div does not, so
+## app.R must add it back explicitly.
+if (!grepl("<title>Draft War Room</title>", ui9, fixed = TRUE)) {
+  fail("s9: rendered ui <head> lost the <title> (was injected by titlePanel)")
+}
+## the lean header must still be there -- a regression deleting the line would
+## otherwise slip past every other s9 check.
+if (!grepl('class="app-header"', ui9, fixed = TRUE) ||
+    !grepl(">Draft War Room<", ui9, fixed = TRUE)) {
+  fail("s9: rendered ui lost the .app-header 'Draft War Room' label")
+}
+## recs_note wrapper carries the class, not an inline style.
+if (!grepl('class="recs-note"', ui9, fixed = TRUE)) {
+  fail("s9: recs_note wrapper is not rendered with class=\"recs-note\"")
+}
+if (grepl("color:#b00|color: #b00", ui9)) {
+  fail("s9: rendered ui still carries the old inline recs-note color")
+}
+for (id in c("banner", "recs_note", "recs_table", "roster_table",
+             "recent_picks_table", "available_table",
+             "player_choice", "draft_btn", "undo_btn", "pos_filter")) {
+  if (!grepl(id, ui9, fixed = TRUE)) fail("s9: rendered ui lost the story-8 id '", id, "'")
+}
+
+## Matrix row 3: styles.css absent at runtime -> the page still assembles, no
+## server error. The stylesheet is referenced by href only; nothing on the R
+## path reads it. Copy the file to a backup (works across filesystems), delete
+## the original, re-source app.R, then restore -- the `finally` guarantees the
+## repo never loses www/styles.css even if the assertion body throws.
+s9_css_bak <- file.path(tempdir(), "styles.css.s9bak")
+if (!file.copy("www/styles.css", s9_css_bak, overwrite = TRUE)) {
+  fail("s9: could not stage a backup of www/styles.css for the row-3 check")
+}
+s9_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s9_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s9_env))
+  htmltools::renderTags(s9_env$ui)
+  inherits(shiny::shinyApp(s9_env$ui, s9_env$server), "shiny.appobj")
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s9_css_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) {
+  fail("s9: www/styles.css was not restored after the row-3 check")
+}
+if (!isTRUE(s9_ok)) {
+  fail("s9: app assembly errored with www/styles.css absent: ", attr(s9_ok, "msg"))
+}
+
+cat("story 9 offline checks OK -- www/styles.css dark shell + app.R header, content unchanged\n")
+
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript
 ## scripts/prepare.R` with no --force must refuse. The guard is placed above the

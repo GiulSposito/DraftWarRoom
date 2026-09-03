@@ -35,7 +35,11 @@ library(shiny)
 ## --- UI ----------------------------------------------------------------
 
 ui <- fluidPage(
-  titlePanel("Draft War Room"),
+  tags$head(
+    tags$title("Draft War Room"),
+    tags$link(rel = "stylesheet", href = "styles.css")
+  ),
+  div(class = "app-header", "Draft War Room"),
 
   fluidRow(
     column(12, h3(textOutput("banner")))
@@ -57,7 +61,7 @@ ui <- fluidPage(
 
   fluidRow(
     column(12, h4("Recomendacoes"),
-           div(style = "color:#b00; font-weight:bold;", textOutput("recs_note")),
+           div(class = "recs-note", textOutput("recs_note")),
            tableOutput("recs_table"))
   ),
 
