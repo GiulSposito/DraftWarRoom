@@ -70,6 +70,15 @@
  * now dead (no selectize on the page) and kept only as history. A single
  * tags$head keydown script (app.R) wires Enter -> click on the active row.
  *
+ * Story 17 (B1) restructures the app.R ui into regions -- .region--search
+ * (dominant query field) inside the one surviving fluidRow, then a
+ * div.warroom-main holding .workspace (Recomendacoes | Disponiveis),
+ * .wide (Picks recentes | Seu roster) and .region--audit (the story-15
+ * all-rosters <details>, moved unchanged). .workspace / .wide are two-column
+ * CSS grids in a wide window and one column below 900px -- the same
+ * wide/narrow threshold story 15 introduced, so the whole page has one wide
+ * state and one narrow state (a simple collapse, no focus-preserving tabs).
+ *
  * Load order: Shiny appends this UI-level tags$head <link> after the registered
  * Bootstrap dependency CSS, so these rules win on equal specificity; the few
  * !important flags below are only where a Bootstrap rule is more specific.
@@ -763,6 +772,96 @@ button.candidate:focus-visible {
   }
   .all-rosters[open] .all-rosters-grid {
     max-height: 60vh;
+  }
+}
+
+/* --- panel-grid layout (story 17, B1) ------------------------------------- */
+/* DESIGN.md "Layout & Spacing" + EXPERIENCE.md "Information Architecture" /
+ * "Responsive & Platform": the war room is regions in bordered panels with
+ * {spacing.gutter} between them -- side by side in a wide window, collapsing to
+ * one linear column in a narrow window docked next to the ESPN. Only the app.R
+ * ui tree and this block changed; no output / reactive / core call / RDS
+ * contract moved. .workspace / .wide / .region--audit are the containers
+ * stories 18-21 fill (board in .wide, inspection in .workspace, audit in
+ * .region--audit); story 17 just seeds them with the outputs that exist. The
+ * 900px threshold is the one story 15 introduced for the rosters grid, reused
+ * so the whole page has a single wide state and a single narrow state. Colours
+ * / spacing / radius are DESIGN.md tokens; the column ratios follow
+ * docs/design/mockups/live-war-room.html. */
+
+.warroom-main {
+  display: grid;
+  gap: var(--gutter);
+  margin-top: var(--space-3);
+}
+
+/* the query field gets a raised, bordered panel spanning the full width
+ * (DESIGN.md "campo de largura dominante"). */
+.region--search {
+  padding: var(--space-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.region-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* the search panel sits in fluidRow > .col-sm-12 (15px side padding); the
+ * .warroom-main regions below are direct children of .container-fluid with
+ * none. Zero the column padding so the search panel's edges line up with every
+ * panel under it. (.recs-filters already uses :has() in this file.) */
+.col-sm-12:has(> .region--search) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(185px, 0.9fr);
+  gap: var(--gutter);
+}
+
+.wide {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(175px, 0.8fr);
+  gap: var(--gutter);
+}
+
+/* grid children must be allowed to shrink so a wide cell never forces the body
+ * to scroll horizontally in a narrow docked window. */
+.workspace > div,
+.wide > div {
+  min-width: 0;
+}
+
+/* the two wide tables (Disponíveis = 6 cols, Picks recentes) get their own
+ * scoped horizontal scroll in a narrowed grid track -- min-width: 0 alone lets
+ * a wide <table> push the body into horizontal scroll, which the spec forbids
+ * (I/O matrix: "sem scroll horizontal do body"). These Shiny output divs wrap
+ * only a <table>, so overflow-x here has no overflow-y side effect. NOT put on
+ * .workspace > div / .wide > div -- that would force overflow-y: auto too. */
+#available_table,
+#recent_picks_table {
+  overflow-x: auto;
+}
+
+.workspace > div > h4:first-child,
+.wide > div > h4:first-child {
+  margin-top: 0;
+}
+
+/* narrow docked window: one linear column, same 900px threshold as story 15.
+ * Placed AFTER the all-rosters @media so that block stays this file's first
+ * @media occurrence (story 15's cap-position assertion). */
+@media (max-width: 900px) {
+  .workspace,
+  .wide {
+    grid-template-columns: 1fr;
   }
 }
 

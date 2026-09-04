@@ -3951,6 +3951,137 @@ if (!isTRUE(s16_css_ok)) {
 
 cat("story 16 offline checks OK -- textInput + resolve_player() search results + click/Enter to pick\n")
 
+## --- story 17: panel-grid layout (offline, presentation only) --------------
+## app.R restructures the ui tree into regions: .region--search (dominant query
+## field) inside the one surviving fluidRow, then a div.warroom-main with
+## .workspace (Recomendacoes | Disponiveis), .wide (Picks recentes | Seu roster)
+## and .region--audit (the story-15 all-rosters <details>, moved unchanged).
+## Presentation only -- server() unchanged, no new core call, no new tags$script.
+## Reuses `fail`, `ui`.
+
+ui17 <- as.character(htmltools::renderTags(ui)$html)
+for (tok in c('class="workspace"', 'class="wide"', "region--search", "region--audit",
+              "warroom-main")) {
+  if (!grepl(tok, ui17, fixed = TRUE)) fail("s17: rendered ui missing '", tok, "'")
+}
+## every input/output id from stories 8-16 still in the ui, at the same ids.
+for (id in c("status_strip", "draft_feedback", "recs_note", "recs_table",
+             "recs_pos_filter", "pos_filter", "roster_table", "recent_picks_table",
+             "available_table", "player_query", "search_results", "draft_btn",
+             "undo_btn", "all_rosters_table")) {
+  if (!grepl(id, ui17, fixed = TRUE)) fail("s17: rendered ui lost the story 8-16 id '", id, "'")
+}
+## status_strip then draft_feedback, both before the first `class="row"` (the
+## search fluidRow) -- stories 10 / 13 pinned this order.
+p_ss17  <- regexpr('id="status_strip"', ui17, fixed = TRUE)
+p_df17  <- regexpr('id="draft_feedback"', ui17, fixed = TRUE)
+p_row17 <- regexpr('class="row"', ui17, fixed = TRUE)
+if (p_ss17 < 0L || p_df17 < 0L || p_row17 < 0L ||
+    p_ss17 > p_df17 || p_df17 > p_row17) {
+  fail("s17: status_strip / draft_feedback are not both ahead of the first class=\"row\"")
+}
+## the <details class="all-rosters" open> (story 15) still static and open.
+if (!grepl('<details class="all-rosters" open>', ui17, fixed = TRUE)) {
+  fail("s17: static ui lost '<details class=\"all-rosters\" open>'")
+}
+
+## CSS: .workspace / .wide are two-column grids, collapsing to one column in an
+## @media (max-width: 900px); story 15's open-grid cap still precedes the first
+## @media occurrence.
+css17      <- paste(readLines("www/styles.css", warn = FALSE), collapse = "\n")
+css17_code <- gsub("(?s)/\\*.*?\\*/", "", css17, perl = TRUE)
+for (tok in c(".warroom-main", ".region--search", ".region-actions",
+              ".workspace", ".wide")) {
+  if (!grepl(tok, css17_code, fixed = TRUE)) fail("s17: styles.css missing '", tok, "'")
+}
+s17_ws_rule <- regmatches(css17_code, regexpr("\\.workspace\\s*\\{[^}]*\\}", css17_code, perl = TRUE))
+s17_wd_rule <- regmatches(css17_code, regexpr("\\.wide\\s*\\{[^}]*\\}", css17_code, perl = TRUE))
+if (!length(s17_ws_rule) || !grepl("display:\\s*grid", s17_ws_rule)) {
+  fail("s17: '.workspace' is not display: grid: ", s17_ws_rule)
+}
+if (!length(s17_wd_rule) || !grepl("display:\\s*grid", s17_wd_rule)) {
+  fail("s17: '.wide' is not display: grid: ", s17_wd_rule)
+}
+if (!grepl("grid-template-columns:[^;]+minmax", paste(s17_ws_rule, s17_wd_rule), perl = TRUE)) {
+  fail("s17: '.workspace' / '.wide' are not two-column (minmax) grids")
+}
+## the narrow @media: at least ONE '@media (max-width: 900px)' block must
+## collapse .workspace/.wide to a single column. Scan every match rather than
+## demand a second literal block -- a future harmless merge of story 15's and
+## story 17's identical media queries into one block must stay legal.
+s17_media_at <- gregexpr("@media (max-width: 900px)", css17_code, fixed = TRUE)[[1]]
+if (s17_media_at[1] < 0L) {
+  fail("s17: no '@media (max-width: 900px)' rule for the narrow layout")
+}
+s17_narrow_ok <- FALSE
+for (s17_at in s17_media_at) {
+  blk <- regmatches(substring(css17_code, s17_at), regexpr(
+    "@media[^{]*\\{(?:[^{}]*\\{[^{}]*\\})*[^{}]*\\}",
+    substring(css17_code, s17_at), perl = TRUE))
+  if (length(blk) && grepl("\\.workspace", blk) && grepl("\\.wide", blk) &&
+      grepl("grid-template-columns:\\s*1fr", blk)) {
+    s17_narrow_ok <- TRUE
+    break
+  }
+}
+if (!s17_narrow_ok) {
+  fail("s17: no '@media (max-width: 900px)' block collapses .workspace/.wide to grid-template-columns: 1fr")
+}
+## story 15's open-grid height cap must still precede the FIRST @media (its own
+## assertion); re-checked here so the new block did not reorder it.
+s17_cap_at <- regexpr("\\.all-rosters\\[open\\][^{]*\\{[^}]*max-height[^}]*overflow-y:\\s*auto",
+                      css17_code, perl = TRUE)
+if (s17_cap_at < 0L || s17_cap_at > s17_media_at[1]) {
+  fail("s17: story 15's open-grid cap no longer precedes the first @media")
+}
+if (grepl("@import|url\\(\\s*['\"]?https?:", css17_code, perl = TRUE)) {
+  fail("s17: styles.css pulls a remote asset -- network on the live path")
+}
+
+## app.R static: presentation-only. Each core function called exactly once; one
+## tags$script; no forbidden theming/JS dep; no network / RNG symbol.
+app17 <- readLines("app.R", warn = FALSE, encoding = "UTF-8")
+if (any(grepl("bslib|sass|includeCSS|shinyjs|Shiny\\.setInputValue", app17))) {
+  fail("s17: app.R introduced a forbidden JS / theming dependency")
+}
+if (sum(grepl("tags\\$script", app17)) != 1L) {
+  fail("s17: app.R must still contain exactly one tags$script (the Enter keydown handler)")
+}
+if (any(grepl("pnorm\\(|rnorm\\(|runif\\(|\\bsample\\(", app17))) fail("s17: app.R names an RNG symbol")
+if (any(grepl("ffanalytics|http[s]?://|\\bscrape\\b|httr::|curl::|download\\.file\\(", app17))) {
+  fail("s17: app.R names a network / scrape symbol")
+}
+app17_code <- sub("#.*$", "", app17)
+for (fn in c("recommend_players", "derive_draft_view", "resolve_player",
+             "record_pick", "undo_pick")) {
+  if (sum(grepl(sprintf("%s\\(", fn), app17_code)) != 1L) {
+    fail(sprintf("s17: %s() not called exactly once in app.R code", fn))
+  }
+}
+
+## www/styles.css absent at runtime: the ui still mounts and shinyApp() returns a
+## shiny.appobj. Same swap-and-restore as stories 9 / 11 / 12 / 15 / 16.
+s17_css_bak <- file.path(tempdir(), "styles.css.s17bak")
+if (!file.copy("www/styles.css", s17_css_bak, overwrite = TRUE)) {
+  fail("s17: could not stage a backup of www/styles.css for the css-absent check")
+}
+s17_ok <- tryCatch({
+  if (!file.remove("www/styles.css")) stop("could not remove www/styles.css")
+  s17_env <- new.env(parent = globalenv())
+  suppressMessages(sys.source("app.R", envir = s17_env))
+  htmltools::renderTags(s17_env$ui)
+  inherits(shiny::shinyApp(s17_env$ui, s17_env$server), "shiny.appobj")
+}, error = function(e) structure(FALSE, msg = conditionMessage(e)),
+   finally = {
+     if (!file.exists("www/styles.css")) {
+       file.copy(s17_css_bak, "www/styles.css", overwrite = TRUE)
+     }
+   })
+if (!file.exists("www/styles.css")) fail("s17: www/styles.css not restored after the css-absent check")
+if (!isTRUE(s17_ok)) fail("s17: app assembly errored with www/styles.css absent: ", attr(s17_ok, "msg"))
+
+cat("story 17 offline checks OK -- panel-grid regions (.warroom-main / .workspace / .wide / .region--*)\n")
+
 ## --- prepare.R immutability guard (one offline subprocess) -------------------
 ## data/projections.rds exists (this test just wrote it), so `Rscript
 ## scripts/prepare.R` with no --force must refuse. The guard is placed above the

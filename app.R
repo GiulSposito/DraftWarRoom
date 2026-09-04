@@ -68,49 +68,78 @@ ui <- fluidPage(
   ## textual, errors persist until the next pick/undo.
   uiOutput("draft_feedback"),
 
-  fluidRow(
-    column(5,
-      textInput("player_query", "Jogador",
-                placeholder = "buscar jogador disponível..."),
-      uiOutput("search_results"),
-      actionButton("draft_btn", "Registrar", class = "btn-primary"),
-      actionButton("undo_btn", "Undo")
-    ),
-    column(3,
-      selectInput("pos_filter", "Filtrar disponíveis por posição",
-                  choices = c("ALL", .warroom_pos_levels), selected = "ALL")
-    )
-  ),
-
-  fluidRow(
-    column(12, h4("Recomendações"),
-           div(class = "recs-note", textOutput("recs_note")),
-           div(class = "recs-filters",
-               radioButtons("recs_pos_filter",
-                            "Filtrar recomendações por posição",
-                            choices = c("Todos", .warroom_pos_levels),
-                            selected = "Todos", inline = TRUE)),
-           uiOutput("recs_table"))
-  ),
-
-  fluidRow(
-    column(6, h4("Seu roster"), uiOutput("roster_table")),
-    column(6, h4("Picks recentes"), tableOutput("recent_picks_table"))
-  ),
-
-  fluidRow(
-    column(12, h4("Disponíveis"), tableOutput("available_table"))
-  ),
-
-  ## All-team rosters (story 15). Full-width row at the foot of the page -- the
-  ## board / opponent-roster tier sits below the operational core (status,
-  ## recommendations, operator roster), DESIGN.md Layout & Spacing. The native
-  ## <details>/<summary> lives here in the static ui (not in the renderUI) so its
-  ## collapsed/open DOM state survives every per-pick re-render of the grid.
-  ## `open = NA` -> `<details ... open>` (open by default). The <summary> wraps
-  ## the section's <h4> so it is both the disclosure control and a heading.
+  ## Search region (story 17, B1). This lone fluidRow exists only because
+  ## tests/smoke.R (story 10, and the new story 17 block) assert that a
+  ## `class="row"` string appears in the rendered UI after `status_strip` --
+  ## position:sticky itself needs no following .row. column(12) + the dominant
+  ## .region--search panel give the query field the full width DESIGN.md asks
+  ## for ("campo de largura dominante"). draft_btn + undo_btn sit in
+  ## .region-actions; pos_filter moved to the Disponíveis panel below.
   fluidRow(
     column(12,
+      div(class = "region region--search",
+        textInput("player_query", "Jogador",
+                  placeholder = "buscar jogador disponível..."),
+        uiOutput("search_results"),
+        div(class = "region-actions",
+          actionButton("draft_btn", "Registrar", class = "btn-primary"),
+          actionButton("undo_btn", "Undo"))))
+  ),
+
+  ## Panel-grid regions (story 17, B1). DESIGN.md "Layout & Spacing" /
+  ## EXPERIENCE.md "Information Architecture": regions in panels, side by side in
+  ## a wide window, collapsing to one linear column below 900px next to the
+  ## ESPN. .workspace / .wide / .region--audit are the containers the later B/C
+  ## stories fill (board in .wide, inspection in .workspace, audit in
+  ## .region--audit); story 17 only seeds them with the outputs that already
+  ## exist. Column children are plain div()s -- the CSS targets .workspace > div
+  ## / .wide > div. A plain div, not <main>: ARIA landmark roles are owned by
+  ## story 23, and a real <main> here would also wrongly drop the search field
+  ## and status strip out of the main landmark. Only this ui tree and one
+  ## www/styles.css block changed; no output, reactive, core call or RDS
+  ## contract moved.
+  div(class = "warroom-main",
+
+    div(class = "workspace",
+      div(
+        h4("Recomendações"),
+        div(class = "recs-note", textOutput("recs_note")),
+        div(class = "recs-filters",
+            radioButtons("recs_pos_filter",
+                         "Filtrar recomendações por posição",
+                         choices = c("Todos", .warroom_pos_levels),
+                         selected = "Todos", inline = TRUE)),
+        uiOutput("recs_table")
+      ),
+      div(
+        h4("Disponíveis"),
+        selectInput("pos_filter", "Filtrar disponíveis por posição",
+                    choices = c("ALL", .warroom_pos_levels), selected = "ALL"),
+        tableOutput("available_table")
+      )
+    ),
+
+    div(class = "wide",
+      div(
+        h4("Picks recentes"),
+        tableOutput("recent_picks_table")
+      ),
+      div(
+        h4("Seu roster"),
+        uiOutput("roster_table")
+      )
+    ),
+
+    ## All-team rosters (story 15), moved verbatim into .region--audit (story
+    ## 17). Full-width region at the foot of the page -- the board /
+    ## opponent-roster tier sits below the operational core (status,
+    ## recommendations, operator roster), DESIGN.md Layout & Spacing. The native
+    ## <details>/<summary> lives here in the static ui (not in the renderUI) so
+    ## its collapsed/open DOM state survives every per-pick re-render of the
+    ## grid. `open = NA` -> `<details ... open>` (open by default). The <summary>
+    ## wraps the section's <h4> so it is both the disclosure control and a
+    ## heading.
+    div(class = "region region--audit",
       tags$details(class = "all-rosters", open = NA,
         tags$summary(tags$h4("Rosters dos times")),
         uiOutput("all_rosters_table")))
